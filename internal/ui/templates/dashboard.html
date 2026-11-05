@@ -1,0 +1,55 @@
+{{template "base.html" .}}
+
+{{define "title"}} — Dashboard{{end}}
+
+{{define "content"}}
+<div class="page-header">
+  <h1>Repositories</h1>
+  <button class="btn btn-sm"
+    hx-post="/api/gc"
+    hx-confirm="Run garbage collection? This deletes unreferenced blobs."
+    hx-target="#gc-result"
+    hx-swap="innerHTML">
+    Run GC
+  </button>
+</div>
+
+<div id="gc-result"></div>
+
+{{if .Repos}}
+<table class="table">
+  <thead>
+    <tr>
+      <th>Repository</th>
+      <th>Tags</th>
+      <th>Created</th>
+      <th>Actions</th>
+    </tr>
+  </thead>
+  <tbody>
+  {{range .Repos}}
+  <tr id="repo-{{.Name}}">
+    <td><a href="/ui/repo/{{.Name}}">{{.Name}}</a></td>
+    <td>{{.TagCount}}</td>
+    <td>{{.CreatedAt.Format "2006-01-02 15:04"}}</td>
+    <td>
+      <button class="btn btn-danger btn-sm"
+        hx-delete="/api/repos/{{.Name}}"
+        hx-confirm="Delete repository {{.Name}}? All tags and manifests will be removed."
+        hx-target="#repo-{{.Name}}"
+        hx-swap="outerHTML">
+        Delete
+      </button>
+    </td>
+  </tr>
+  {{end}}
+  </tbody>
+</table>
+{{else}}
+<div class="empty-state">
+  <p>No repositories yet. Push an image to get started:</p>
+  <pre><code>docker tag nginx localhost:8080/nginx:latest
+docker push localhost:8080/nginx:latest</code></pre>
+</div>
+{{end}}
+{{end}}

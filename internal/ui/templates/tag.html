@@ -1,0 +1,44 @@
+{{template "base.html" .}}
+
+{{define "title"}} — {{.Repo}}:{{.Tag}}{{end}}
+
+{{define "content"}}
+<div class="page-header">
+  <h1>
+    <a href="/">Repositories</a> /
+    <a href="/ui/repo/{{.Repo}}">{{.Repo}}</a> /
+    {{.Tag}}
+  </h1>
+</div>
+
+<div class="card">
+  <div class="card-row">
+    <span class="label">Digest</span>
+    <code>{{.Manifest.Digest}}</code>
+  </div>
+  <div class="card-row">
+    <span class="label">Media Type</span>
+    <code>{{.Manifest.MediaType}}</code>
+  </div>
+  <div class="card-row">
+    <span class="label">Size</span>
+    <span>{{.Manifest.Size}} bytes</span>
+  </div>
+  <div class="card-row">
+    <span class="label">Created</span>
+    <span>{{.Manifest.CreatedAt.Format "2006-01-02 15:04:05 UTC"}}</span>
+  </div>
+</div>
+
+<h2>Raw Manifest</h2>
+<pre class="code-block">{{.Content}}</pre>
+
+<div class="actions">
+  <button class="btn btn-danger"
+    hx-delete="/api/manifests/{{.Repo}}/{{.Manifest.Digest}}"
+    hx-confirm="Delete manifest {{.Manifest.Digest}}?"
+    hx-push-url="/ui/repo/{{.Repo}}">
+    Delete Manifest
+  </button>
+</div>
+{{end}}

@@ -1,0 +1,22 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Foundry Registry{{block "title" .}}{{end}}</title>
+  <script src="https://unpkg.com/htmx.org@1.9.12/dist/htmx.min.js" crossorigin="anonymous"></script>
+  <link rel="stylesheet" href="/static/css/main.css">
+</head>
+<body>
+  <nav class="nav">
+    <a href="/" class="nav-brand">⚒ Foundry</a>
+    <span class="nav-sub">Container Registry</span>
+  </nav>
+  <main class="container">
+    {{block "content" .}}{{end}}
+  </main>
+  <footer class="footer">
+    Foundry Registry — <a href="https://github.com/foundry/registry">GitHub</a>
+  </footer>
+</body>
+</html>

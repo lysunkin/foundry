@@ -1,0 +1,13 @@
+{{template "base.html" .}}
+
+{{define "title"}} — {{.Name}}{{end}}
+
+{{define "content"}}
+<div class="page-header">
+  <h1><a href="/">Repositories</a> / {{.Name}}</h1>
+</div>
+
+<div id="tags">
+  {{template "tags_fragment.html" .}}
+</div>
+{{end}}

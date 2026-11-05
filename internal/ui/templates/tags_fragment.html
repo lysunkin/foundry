@@ -1,0 +1,35 @@
+{{define "tags_fragment.html"}}
+{{if .Tags}}
+<table class="table">
+  <thead>
+    <tr>
+      <th>Tag</th>
+      <th>Digest</th>
+      <th>Updated</th>
+      <th>Actions</th>
+    </tr>
+  </thead>
+  <tbody>
+  {{range .Tags}}
+  <tr>
+    <td><a href="/ui/repo/{{.RepositoryName}}/tag/{{.Tag}}">{{.Tag}}</a></td>
+    <td class="digest">{{slice .ManifestDigest 0 19}}…</td>
+    <td>{{.UpdatedAt.Format "2006-01-02 15:04"}}</td>
+    <td>
+      <button class="btn btn-danger btn-sm"
+        hx-delete="/api/tags/{{.RepositoryName}}/{{.Tag}}"
+        hx-confirm="Delete tag {{.Tag}}?"
+        hx-target="#tags"
+        hx-get="/ui/repo/{{.RepositoryName}}/tags"
+        hx-trigger="click">
+        Delete
+      </button>
+    </td>
+  </tr>
+  {{end}}
+  </tbody>
+</table>
+{{else}}
+<p class="muted">No tags in this repository.</p>
+{{end}}
+{{end}}
