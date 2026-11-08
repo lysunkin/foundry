@@ -286,12 +286,6 @@ func TestIntegration_API_GC(t *testing.T) {
 	orphan := bytes.Repeat([]byte("orphaned"), 64)
 	orphanDigest := sha256Digest(orphan)
 
-	// Use chunked upload to bypass the DB SaveBlob call (PUT → blob stored on
-	// disk but no DB row created for it, so GC will find it as unreferenced).
-	// Actually, monolithic push does save to DB, so instead we manually push
-	// via chunked upload and then delete the DB row through the API.
-	// Simplest approach: push monolithically, then delete the manifest that
-	// references it, then run GC.
 	orphanResp := rs.do(t, http.MethodPost,
 		fmt.Sprintf("/v2/%s/blobs/uploads/?digest=%s", repo, orphanDigest),
 		bytes.NewReader(orphan),
@@ -314,25 +308,37 @@ func TestIntegration_API_GC(t *testing.T) {
 	mustStatus(t, delResp, http.StatusOK)
 	readBody(t, delResp)
 
-	// Also remove from blobs DB table via... there's no direct blob-delete API.
-	// The blob is in the DB but not referenced by any manifest — GC should
-	// protect it because AllBlobDigests also marks DB-registered blobs.
-	// So let's just verify GC runs without errors and returns a valid result.
+	// The orphan blob now has no referencing manifest, so GC must collect it
+	// (from disk and from the DB) while keeping the still-referenced config.
 	resp := rs.do(t, http.MethodPost, "/api/gc", nil, nil)
 	mustStatus(t, resp, http.StatusOK)
 
 	var result struct {
-		ScannedBlobs int      `json:"ScannedBlobs"`
-		DeletedBlobs int      `json:"DeletedBlobs"`
-		FreedBytes   int64    `json:"FreedBytes"`
-		Errors       []string `json:"Errors"`
+		ScannedBlobs int      `json:"scanned_blobs"`
+		DeletedBlobs int      `json:"deleted_blobs"`
+		FreedBytes   int64    `json:"freed_bytes"`
+		Errors       []string `json:"errors"`
 	}
 	json.Unmarshal(readBody(t, resp), &result)
 
-	if result.ScannedBlobs < 1 {
-		t.Errorf("ScannedBlobs = %d, want ≥ 1", result.ScannedBlobs)
+	if result.ScannedBlobs != 2 {
+		t.Errorf("ScannedBlobs = %d, want 2", result.ScannedBlobs)
+	}
+	if result.DeletedBlobs != 1 {
+		t.Errorf("DeletedBlobs = %d, want 1", result.DeletedBlobs)
+	}
+	if result.FreedBytes != int64(len(orphan)) {
+		t.Errorf("FreedBytes = %d, want %d", result.FreedBytes, len(orphan))
 	}
 	if len(result.Errors) != 0 {
 		t.Errorf("GC errors: %v", result.Errors)
 	}
+
+	// Orphan is gone; referenced config is still served.
+	resp = rs.do(t, http.MethodHead, fmt.Sprintf("/v2/%s/blobs/%s", repo, orphanDigest), nil, nil)
+	mustStatus(t, resp, http.StatusNotFound)
+	readBody(t, resp)
+	resp = rs.do(t, http.MethodHead, fmt.Sprintf("/v2/%s/blobs/%s", repo, configDigest), nil, nil)
+	mustStatus(t, resp, http.StatusOK)
+	readBody(t, resp)
 }

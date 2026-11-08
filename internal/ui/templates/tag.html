@@ -36,8 +36,10 @@
 <div class="actions">
   <button class="btn btn-danger"
     hx-delete="/api/manifests/{{.Repo}}/{{.Manifest.Digest}}"
-    hx-confirm="Delete manifest {{.Manifest.Digest}}?"
-    hx-push-url="/ui/repo/{{.Repo}}">
+    hx-confirm="Delete manifest {{.Manifest.Digest}}? All tags pointing at it will be removed."
+    hx-swap="none"
+    data-redirect="/ui/repo/{{.Repo}}"
+    hx-on::after-request="if (event.detail.successful) window.location = this.dataset.redirect">
     Delete Manifest
   </button>
 </div>

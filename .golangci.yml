@@ -1,0 +1,52 @@
+# golangci-lint v2 configuration — run via `make lint`.
+# Docs: https://golangci-lint.run/docs/configuration/file/
+version: "2"
+
+run:
+  timeout: 5m
+  tests: true
+
+linters:
+  # standard = errcheck, govet, ineffassign, staticcheck, unused
+  default: standard
+  enable:
+    - bodyclose     # unclosed HTTP response bodies (regctl, integration tests)
+    - errorlint     # use errors.Is/As instead of == on wrapped errors
+    - gosec         # security: path traversal, file perms, unbounded reads
+    - misspell
+    - nilerr        # returning nil when err != nil
+    - unconvert
+    - usestdlibvars # http.MethodGet instead of "GET", etc.
+  settings:
+    errcheck:
+      # Best-effort cleanup calls whose errors are intentionally ignored.
+      exclude-functions:
+        - (*database/sql.Tx).Rollback
+        - (*os.File).Close
+        - (io.Closer).Close
+        - os.Remove
+        - (net/http.ResponseWriter).Write
+    gosec:
+      excludes:
+        - G104 # unchecked errors — covered by errcheck
+        - G304 # file paths from variables — paths are validated in storage
+        - G301 # 0o755 data dirs are intentional
+        - G306 # 0o644 data files are intentional
+  exclusions:
+    presets:
+      - std-error-handling
+    rules:
+      - path: _test\.go
+        linters:
+          - errcheck
+          - gosec
+          - bodyclose
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  settings:
+    goimports:
+      local-prefixes:
+        - github.com/foundry/registry

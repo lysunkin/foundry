@@ -1,15 +1,27 @@
 package storage
 
 import (
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
+	"sync"
 )
+
+// ErrInvalidUploadID is returned for upload IDs containing unsafe characters.
+var ErrInvalidUploadID = errors.New("invalid upload id")
+
+// Upload IDs are generated as UUIDs; accept any short token of safe characters
+// so an ID can never escape the uploads directory.
+var uploadIDRe = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
 
 // UploadStore manages temporary files for chunked blob uploads.
 type UploadStore struct {
-	dir string
+	dir   string
+	locks sync.Map // upload id -> *sync.Mutex
 }
 
 func NewUploadStore(dir string) (*UploadStore, error) {
@@ -20,21 +32,38 @@ func NewUploadStore(dir string) (*UploadStore, error) {
 	return &UploadStore{dir: p}, nil
 }
 
+// Lock serialises operations on a single upload session (e.g. two concurrent
+// PATCH requests for the same UUID). The returned func releases the lock.
+func (s *UploadStore) Lock(id string) func() {
+	v, _ := s.locks.LoadOrStore(id, &sync.Mutex{})
+	mu := v.(*sync.Mutex)
+	mu.Lock()
+	return mu.Unlock
+}
+
 // Create makes a new temp file for the given upload ID.
 func (s *UploadStore) Create(id string) (string, error) {
-	path := s.path(id)
-	f, err := os.Create(path)
+	path, err := s.safePath(id)
 	if err != nil {
 		return "", err
 	}
-	f.Close()
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	if err != nil {
+		return "", err
+	}
+	if err := f.Close(); err != nil {
+		return "", err
+	}
 	return path, nil
 }
 
 // Append writes data to the upload, starting at offset. Returns the new offset.
 func (s *UploadStore) Append(id string, offset int64, r io.Reader) (int64, error) {
-	path := s.path(id)
-	f, err := os.OpenFile(path, os.O_WRONLY, 0o644)
+	path, err := s.safePath(id)
+	if err != nil {
+		return 0, err
+	}
+	f, err := os.OpenFile(path, os.O_WRONLY, 0o600)
 	if err != nil {
 		return 0, fmt.Errorf("upload append open: %w", err)
 	}
@@ -53,14 +82,34 @@ func (s *UploadStore) Append(id string, offset int64, r io.Reader) (int64, error
 	return offset + n, nil
 }
 
-// Path returns the filesystem path for an upload ID.
+// Path returns the filesystem path for an upload ID. Callers must only pass
+// IDs that have been validated (e.g. obtained from Create or the database).
 func (s *UploadStore) Path(id string) string {
 	return s.path(id)
 }
 
-// Delete removes the temp file.
+// Delete removes the temp file and releases the per-upload lock entry.
+// Deleting a non-existent upload is not an error.
 func (s *UploadStore) Delete(id string) error {
-	return os.Remove(s.path(id))
+	path, err := s.safePath(id)
+	if err != nil {
+		return err
+	}
+	s.locks.Delete(id)
+	if err := os.Remove(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+	return nil
+}
+
+// ValidUploadID reports whether id is a well-formed upload session ID.
+func ValidUploadID(id string) bool { return uploadIDRe.MatchString(id) }
+
+func (s *UploadStore) safePath(id string) (string, error) {
+	if !ValidUploadID(id) {
+		return "", ErrInvalidUploadID
+	}
+	return s.path(id), nil
 }
 
 func (s *UploadStore) path(id string) string {

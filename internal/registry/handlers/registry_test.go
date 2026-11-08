@@ -43,6 +43,9 @@ func TestBlob_HeadFound(t *testing.T) {
 	data := []byte("test blob content")
 	d := digest(data)
 
+	if _, _, err := ts.blobs.Put(bytes.NewReader(data)); err != nil {
+		t.Fatal(err)
+	}
 	ts.svc.SaveBlob(d, int64(len(data)))
 
 	rr := ts.do(t, http.MethodHead, "/v2/myrepo/blobs/"+d, nil, nil)
@@ -278,12 +281,24 @@ func TestUpload_Delete(t *testing.T) {
 
 const ociManifestMediaType = "application/vnd.oci.image.manifest.v1+json"
 
+// seedBlobRecord registers a blob digest so manifests referencing it pass
+// MANIFEST_BLOB_UNKNOWN validation.
+func seedBlobRecord(t *testing.T, ts *testServer, d string) {
+	t.Helper()
+	if err := ts.svc.SaveBlob(d, 1); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func sampleConfigDigest() string { return "sha256:" + strings.Repeat("c", 64) }
+
 func sampleManifest() []byte {
 	return []byte(`{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json","config":{"mediaType":"application/vnd.oci.image.config.v1+json","digest":"sha256:` + strings.Repeat("c", 64) + `","size":1},"layers":[]}`)
 }
 
 func TestManifest_PutByTag(t *testing.T) {
 	ts := newTestServer(t)
+	seedBlobRecord(t, ts, sampleConfigDigest())
 	content := sampleManifest()
 	d := digest(content)
 
@@ -302,6 +317,7 @@ func TestManifest_PutByTag(t *testing.T) {
 
 func TestManifest_PutByDigest(t *testing.T) {
 	ts := newTestServer(t)
+	seedBlobRecord(t, ts, sampleConfigDigest())
 	content := sampleManifest()
 	d := digest(content)
 
@@ -315,6 +331,7 @@ func TestManifest_PutByDigest(t *testing.T) {
 
 func TestManifest_GetByTag(t *testing.T) {
 	ts := newTestServer(t)
+	seedBlobRecord(t, ts, sampleConfigDigest())
 	content := sampleManifest()
 	d := digest(content)
 
@@ -335,6 +352,7 @@ func TestManifest_GetByTag(t *testing.T) {
 
 func TestManifest_GetByDigest(t *testing.T) {
 	ts := newTestServer(t)
+	seedBlobRecord(t, ts, sampleConfigDigest())
 	content := sampleManifest()
 	d := digest(content)
 
@@ -400,6 +418,8 @@ func TestManifest_PutUpdatesTag(t *testing.T) {
 	v1 := []byte(`{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json","config":{"digest":"sha256:` + strings.Repeat("1", 64) + `"},"layers":[]}`)
 	v2 := []byte(`{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json","config":{"digest":"sha256:` + strings.Repeat("2", 64) + `"},"layers":[]}`)
 	d2 := digest(v2)
+	seedBlobRecord(t, ts, "sha256:"+strings.Repeat("1", 64))
+	seedBlobRecord(t, ts, "sha256:"+strings.Repeat("2", 64))
 
 	ts.do(t, http.MethodPut, "/v2/repo/manifests/latest", bytes.NewReader(v1),
 		map[string]string{"Content-Type": ociManifestMediaType})
@@ -525,5 +545,20 @@ func TestOCIIndexPushFlow(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("latest tag not in tags list: %v", tagResp.Tags)
+	}
+}
+
+// A manifest declaring a non-manifest media type must be rejected: the type is
+// echoed back as Content-Type and would otherwise allow stored XSS.
+func TestManifest_PutRejectsNonManifestMediaType(t *testing.T) {
+	ts := newTestServer(t)
+	seedBlobRecord(t, ts, sampleConfigDigest())
+	body := []byte(`{"schemaVersion":2,"mediaType":"text/html","config":{"digest":"` + sampleConfigDigest() + `"},"layers":[]}`)
+
+	rr := ts.do(t, http.MethodPut, "/v2/myrepo/manifests/latest", bytes.NewReader(body),
+		map[string]string{"Content-Type": "text/html"})
+	mustStatus(t, rr, http.StatusBadRequest)
+	if !strings.Contains(rr.Body.String(), "MANIFEST_INVALID") {
+		t.Errorf("expected MANIFEST_INVALID, got %s", rr.Body.String())
 	}
 }

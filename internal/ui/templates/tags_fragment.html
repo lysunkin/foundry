@@ -13,15 +13,14 @@
   {{range .Tags}}
   <tr>
     <td><a href="/ui/repo/{{.RepositoryName}}/tag/{{.Tag}}">{{.Tag}}</a></td>
-    <td class="digest">{{slice .ManifestDigest 0 19}}…</td>
+    <td class="digest" title="{{.ManifestDigest}}">{{shortDigest .ManifestDigest}}</td>
     <td>{{.UpdatedAt.Format "2006-01-02 15:04"}}</td>
     <td>
       <button class="btn btn-danger btn-sm"
         hx-delete="/api/tags/{{.RepositoryName}}/{{.Tag}}"
         hx-confirm="Delete tag {{.Tag}}?"
-        hx-target="#tags"
-        hx-get="/ui/repo/{{.RepositoryName}}/tags"
-        hx-trigger="click">
+        hx-target="closest tr"
+        hx-swap="delete">
         Delete
       </button>
     </td>

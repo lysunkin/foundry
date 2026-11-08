@@ -4,11 +4,11 @@
 //
 // Run with:
 //
-//	go test -tags integration -count=1 ./tests/integration/...
+//	go test -count=1 ./tests/integration/...
 //
 // or via the Makefile:
 //
-//	make integration-test
+//	make test-integration
 package integration
 
 import (
@@ -74,7 +74,10 @@ func newRegistryServer(t *testing.T) *registryServer {
 	}
 
 	cfg := registry.Config{Addr: "127.0.0.1:0", DataDir: dataDir, DBPath: dbPath}
-	srv := registry.New(cfg, svc, blobs, ups, tmpls, web.StaticFS)
+	srv, err := registry.New(cfg, svc, blobs, ups, tmpls, web.StaticFS)
+	if err != nil {
+		t.Fatalf("registry.New: %v", err)
+	}
 
 	ts := httptest.NewServer(srv)
 	t.Cleanup(ts.Close)
@@ -87,7 +90,7 @@ func newRegistryServer(t *testing.T) *registryServer {
 
 // url builds an absolute URL for the given path.
 func (rs *registryServer) url(path string) string {
-	return rs.Server.URL + path
+	return rs.URL + path
 }
 
 // do executes a request and returns the response. Caller must close body.

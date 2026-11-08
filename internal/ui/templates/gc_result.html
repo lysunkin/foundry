@@ -1,0 +1,10 @@
+{{define "gc_result.html"}}
+<div class="card">
+  <div class="card-row"><span class="label">Result</span><span>{{if .DryRun}}Dry run — nothing deleted{{else}}Garbage collection complete{{end}}</span></div>
+  <div class="card-row"><span class="label">Scanned blobs</span><span>{{.ScannedBlobs}}</span></div>
+  <div class="card-row"><span class="label">Deleted blobs</span><span>{{.DeletedBlobs}}</span></div>
+  <div class="card-row"><span class="label">Freed</span><span>{{.FreedBytes}} bytes</span></div>
+  <div class="card-row"><span class="label">Expired uploads</span><span>{{.DeletedUploads}}</span></div>
+  {{range .Errors}}<div class="card-row"><span class="label">Error</span><code>{{.}}</code></div>{{end}}
+</div>
+{{end}}

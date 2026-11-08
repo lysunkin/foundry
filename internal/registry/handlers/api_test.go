@@ -207,9 +207,9 @@ func TestAPIGC(t *testing.T) {
 	mustStatus(t, rr, http.StatusOK)
 
 	var result struct {
-		ScannedBlobs int      `json:"ScannedBlobs"`
-		DeletedBlobs int      `json:"DeletedBlobs"`
-		Errors       []string `json:"Errors"`
+		ScannedBlobs int      `json:"scanned_blobs"`
+		DeletedBlobs int      `json:"deleted_blobs"`
+		Errors       []string `json:"errors"`
 	}
 	decodeJSON(t, rr, &result)
 

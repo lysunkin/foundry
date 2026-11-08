@@ -49,7 +49,7 @@ func newTestServer(t *testing.T) *testServer {
 	r := chi.NewRouter()
 
 	handlers.NewRegistryHandler(svc, blobs, ups).Mount(r)
-	handlers.NewAPIHandler(svc, blobs).Mount(r)
+	handlers.NewAPIHandler(svc, blobs, ups, services.GCOptions{}).Mount(r)
 
 	return &testServer{router: r, svc: svc, blobs: blobs, ups: ups}
 }

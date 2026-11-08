@@ -35,3 +35,6 @@ go.work.sum
 # compiled files
 foundry-registry
 regctl
+
+# Registry runtime state (SQLite DB, blobs, uploads) — never commit
+data/

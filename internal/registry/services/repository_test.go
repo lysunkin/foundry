@@ -1,6 +1,7 @@
 package services_test
 
 import (
+	"errors"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -57,7 +58,7 @@ func TestRepository_GetNotFound(t *testing.T) {
 	svc := newService(t)
 
 	_, err := svc.GetRepository("nonexistent")
-	if err != services.ErrNotFound {
+	if !errors.Is(err, services.ErrNotFound) {
 		t.Errorf("expected ErrNotFound, got %v", err)
 	}
 }
@@ -92,7 +93,7 @@ func TestRepository_ListEmpty(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if repos != nil && len(repos) != 0 {
+	if len(repos) != 0 {
 		t.Errorf("expected nil or empty, got %v", repos)
 	}
 }
@@ -111,7 +112,7 @@ func TestRepository_Delete(t *testing.T) {
 	}
 
 	_, err := svc.GetRepository("todelete")
-	if err != services.ErrNotFound {
+	if !errors.Is(err, services.ErrNotFound) {
 		t.Errorf("expected ErrNotFound after delete, got %v", err)
 	}
 }
@@ -119,7 +120,7 @@ func TestRepository_Delete(t *testing.T) {
 func TestRepository_DeleteNotFound(t *testing.T) {
 	svc := newService(t)
 	err := svc.DeleteRepository("ghost")
-	if err != services.ErrNotFound {
+	if !errors.Is(err, services.ErrNotFound) {
 		t.Errorf("expected ErrNotFound, got %v", err)
 	}
 }
@@ -170,7 +171,7 @@ func TestBlob_SaveIdempotent(t *testing.T) {
 func TestBlob_GetNotFound(t *testing.T) {
 	svc := newService(t)
 	_, err := svc.GetBlob("sha256:" + strings.Repeat("00", 32))
-	if err != services.ErrNotFound {
+	if !errors.Is(err, services.ErrNotFound) {
 		t.Errorf("expected ErrNotFound, got %v", err)
 	}
 }
@@ -294,12 +295,12 @@ func TestManifest_GetNotFound(t *testing.T) {
 	svc.EnsureRepository("empty")
 
 	_, err := svc.GetManifest("empty", "sha256:"+strings.Repeat("00", 32))
-	if err != services.ErrNotFound {
+	if !errors.Is(err, services.ErrNotFound) {
 		t.Errorf("expected ErrNotFound by digest, got %v", err)
 	}
 
 	_, err = svc.GetManifest("empty", "nonexistent-tag")
-	if err != services.ErrNotFound {
+	if !errors.Is(err, services.ErrNotFound) {
 		t.Errorf("expected ErrNotFound by tag, got %v", err)
 	}
 }
@@ -307,7 +308,7 @@ func TestManifest_GetNotFound(t *testing.T) {
 func TestManifest_GetRepoNotFound(t *testing.T) {
 	svc := newService(t)
 	_, err := svc.GetManifest("ghost", "latest")
-	if err != services.ErrNotFound {
+	if !errors.Is(err, services.ErrNotFound) {
 		t.Errorf("expected ErrNotFound for missing repo, got %v", err)
 	}
 }
@@ -325,7 +326,7 @@ func TestManifest_Delete(t *testing.T) {
 	}
 
 	_, err := svc.GetManifest("repo", digest)
-	if err != services.ErrNotFound {
+	if !errors.Is(err, services.ErrNotFound) {
 		t.Errorf("manifest should be gone, got %v", err)
 	}
 	// Tag should also be gone.
@@ -410,7 +411,7 @@ func TestTag_Upsert(t *testing.T) {
 func TestTag_ListRepoNotFound(t *testing.T) {
 	svc := newService(t)
 	_, err := svc.ListTags("ghost")
-	if err != services.ErrNotFound {
+	if !errors.Is(err, services.ErrNotFound) {
 		t.Errorf("expected ErrNotFound, got %v", err)
 	}
 }
@@ -437,7 +438,7 @@ func TestTag_DeleteNotFound(t *testing.T) {
 	svc.EnsureRepository("repo")
 
 	err := svc.DeleteTag("repo", "ghost")
-	if err != services.ErrNotFound {
+	if !errors.Is(err, services.ErrNotFound) {
 		t.Errorf("expected ErrNotFound, got %v", err)
 	}
 }
@@ -487,7 +488,7 @@ func TestUpload_UpdateOffset(t *testing.T) {
 func TestUpload_GetNotFound(t *testing.T) {
 	svc := newService(t)
 	_, err := svc.GetUpload("no-such-id")
-	if err != services.ErrNotFound {
+	if !errors.Is(err, services.ErrNotFound) {
 		t.Errorf("expected ErrNotFound, got %v", err)
 	}
 }
@@ -502,7 +503,7 @@ func TestUpload_Delete(t *testing.T) {
 	}
 
 	_, err := svc.GetUpload("del-uid")
-	if err != services.ErrNotFound {
+	if !errors.Is(err, services.ErrNotFound) {
 		t.Errorf("expected ErrNotFound after delete, got %v", err)
 	}
 }

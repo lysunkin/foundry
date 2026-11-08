@@ -6,7 +6,7 @@
 <div class="page-header">
   <h1>Repositories</h1>
   <button class="btn btn-sm"
-    hx-post="/api/gc"
+    hx-post="/ui/gc"
     hx-confirm="Run garbage collection? This deletes unreferenced blobs."
     hx-target="#gc-result"
     hx-swap="innerHTML">
@@ -28,7 +28,7 @@
   </thead>
   <tbody>
   {{range .Repos}}
-  <tr id="repo-{{.Name}}">
+  <tr>
     <td><a href="/ui/repo/{{.Name}}">{{.Name}}</a></td>
     <td>{{.TagCount}}</td>
     <td>{{.CreatedAt.Format "2006-01-02 15:04"}}</td>
@@ -36,8 +36,8 @@
       <button class="btn btn-danger btn-sm"
         hx-delete="/api/repos/{{.Name}}"
         hx-confirm="Delete repository {{.Name}}? All tags and manifests will be removed."
-        hx-target="#repo-{{.Name}}"
-        hx-swap="outerHTML">
+        hx-target="closest tr"
+        hx-swap="delete">
         Delete
       </button>
     </td>

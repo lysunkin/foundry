@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/foundry/registry/internal/db"
 	"github.com/foundry/registry/internal/registry/services"
@@ -57,7 +58,7 @@ func TestGC_DeletesUnreferencedBlobs(t *testing.T) {
 	digest := services.ComputeDigest(manifestJSON)
 	svc.SaveManifest("repo", digest, "application/vnd.oci.image.manifest.v1+json", manifestJSON)
 
-	result, err := services.GarbageCollect(svc, blobs)
+	result, err := services.GarbageCollect(svc, blobs, nil, services.GCOptions{})
 	if err != nil {
 		t.Fatalf("GarbageCollect: %v", err)
 	}
@@ -87,8 +88,10 @@ func TestGC_NoOrphans(t *testing.T) {
 	data := []byte("clean blob")
 	d := putBlob(t, blobs, data)
 	svc.SaveBlob(d, int64(len(data)))
+	m := []byte(`{"schemaVersion":2,"config":{"digest":"` + d + `"},"layers":[]}`)
+	svc.SaveManifest("repo", services.ComputeDigest(m), "application/vnd.oci.image.manifest.v1+json", m)
 
-	result, err := services.GarbageCollect(svc, blobs)
+	result, err := services.GarbageCollect(svc, blobs, nil, services.GCOptions{})
 	if err != nil {
 		t.Fatalf("GarbageCollect: %v", err)
 	}
@@ -103,7 +106,7 @@ func TestGC_NoOrphans(t *testing.T) {
 func TestGC_EmptyStore(t *testing.T) {
 	svc, blobs := newGCFixtures(t)
 
-	result, err := services.GarbageCollect(svc, blobs)
+	result, err := services.GarbageCollect(svc, blobs, nil, services.GCOptions{})
 	if err != nil {
 		t.Fatalf("GarbageCollect on empty store: %v", err)
 	}
@@ -128,7 +131,7 @@ func TestGC_FreedBytesAccounting(t *testing.T) {
 	putBlob(t, blobs, smallBlob)
 	putBlob(t, blobs, largeBlob)
 
-	result, err := services.GarbageCollect(svc, blobs)
+	result, err := services.GarbageCollect(svc, blobs, nil, services.GCOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -156,12 +159,58 @@ func TestGC_ManifestReferencedBlobProtected(t *testing.T) {
 	md := services.ComputeDigest(manifestJSON)
 	svc.SaveManifest("repo", md, "application/vnd.oci.image.manifest.v1+json", manifestJSON)
 
-	result, err := services.GarbageCollect(svc, blobs)
+	result, err := services.GarbageCollect(svc, blobs, nil, services.GCOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	// config blob is referenced in manifest JSON — GC should protect it.
 	if result.DeletedBlobs != 0 {
 		t.Errorf("DeletedBlobs = %d, want 0 (manifest-referenced blob protected)", result.DeletedBlobs)
+	}
+}
+
+func TestGC_GracePeriodProtectsFreshBlobs(t *testing.T) {
+	svc, blobs := newGCFixtures(t)
+	d := putBlob(t, blobs, []byte("fresh, not yet referenced"))
+	svc.SaveBlob(d, 25)
+
+	res, err := services.GarbageCollect(svc, blobs, nil, services.GCOptions{GracePeriod: time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.DeletedBlobs != 0 {
+		t.Errorf("fresh blob deleted despite grace period")
+	}
+	if ok, _ := blobs.Exists(d); !ok {
+		t.Error("fresh blob missing")
+	}
+}
+
+func TestGC_DryRunDeletesNothing(t *testing.T) {
+	svc, blobs := newGCFixtures(t)
+	d := putBlob(t, blobs, []byte("orphan"))
+
+	res, err := services.GarbageCollect(svc, blobs, nil, services.GCOptions{DryRun: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.DeletedBlobs != 1 || !res.DryRun {
+		t.Errorf("dry run result = %+v", res)
+	}
+	if ok, _ := blobs.Exists(d); !ok {
+		t.Error("dry run deleted the blob")
+	}
+}
+
+func TestGC_RemovesDBRowOfCollectedBlob(t *testing.T) {
+	svc, blobs := newGCFixtures(t)
+	d := putBlob(t, blobs, []byte("pushed then abandoned"))
+	svc.SaveBlob(d, 21)
+
+	if _, err := services.GarbageCollect(svc, blobs, nil, services.GCOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if ok, _ := svc.BlobExists(d); ok {
+		t.Error("blob DB row should be removed with the file")
 	}
 }
