@@ -59,9 +59,26 @@ docker push localhost:8080/nginx:latest
 docker pull localhost:8080/nginx:latest
 ```
 
-> **Docker Desktop:** the daemon runs in a VM. If a push to `localhost:8080`
-> fails with `connection refused`, use `host.docker.internal:8080` and add that
-> name to `insecure-registries`.
+### Docker in a VM (colima, Docker Desktop)
+
+`docker push` is performed by the Docker daemon, not the CLI. If the daemon
+runs inside a VM, `localhost` means the VM, so a registry running on your Mac
+fails with:
+
+```
+dial tcp 127.0.0.1:8080: connect: connection refused
+```
+
+**colima:** run `make colima-forward` once (and again after every
+`colima restart`). It adds an iptables NAT rule in the VM, sending
+`localhost:8080` to the host, so `localhost:8080/...` image names work
+unchanged. `make colima-forward-down` removes it; `make colima-forward-status`
+shows its state. See [scripts/colima-forward.sh](scripts/colima-forward.sh).
+(A plain port forwarder such as socat in the VM does **not** work: Lima
+auto-forwards it back to the Mac's `127.0.0.1:8080` and creates a loop.)
+
+**Docker Desktop:** use `host.docker.internal:8080` as the registry host and
+add it to `insecure-registries`.
 
 ## CLI
 
