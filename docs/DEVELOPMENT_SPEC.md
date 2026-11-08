@@ -8,7 +8,8 @@
 
 This document defines what Foundry must do, the invariants the code relies on,
 and the engineering rules for changing it. §9 records the defects found in the
-review and how each was resolved. §10 is the prioritized roadmap.
+review and how each was resolved. §10 is the prioritized roadmap. §11 lists
+post-MVP stretch goals.
 
 ---
 
@@ -376,11 +377,12 @@ early.
 and a `crane`/`docker` push-pull round trip against a built binary.
 
 **R8 — OCI 1.1 referrers API (low).** `GET /v2/<name>/referrers/<digest>` plus
-`subject` handling (`OCI-Subject` header) for signatures and SBOMs.
+`subject` handling (`OCI-Subject` header) for signatures and SBOMs. Prerequisite for S4.
 
 **R9 — GC policy options (low).** `-gc-delete-untagged` (remove untagged
 manifests not referenced by an index), and optional scheduled GC
-(`-gc-interval`).
+(`-gc-interval`). Must not delete referrers (signatures, SBOMs)
+whose `subject` is still alive (see S4).
 
 **R10 — Per-repository blob links (low).** Today any repository can read any
 blob by digest (blobs are global). Add a `repository_blobs` link table
@@ -393,3 +395,190 @@ they can't parse).
 
 **R12 — Online backup (low).** `regctl backup` using SQLite `VACUUM INTO` plus
 a blob rsync, so backups don't require stopping the server.
+
+---
+
+## 11. Stretch goals (post-MVP)
+
+These are product features, not hardening. Work on them starts only when the
+MVP is stable, defined as:
+
+- no open **C** or **H** defects;
+- R1 (auth), R2 (context propagation) and R7 (real-client conformance) are
+  done, with the OCI conformance suite passing in CI;
+- `make check` is the CI gate.
+
+S1 and S2 are independent and can start in either order. S3 depends on S2's
+size data only for display. S4 depends on R8.
+
+### S1 — Search
+
+**Goal:** find repositories, tags and digests from the web UI, the admin API
+and `regctl`.
+
+| Query | Matches | Example |
+|---|---|---|
+| Repository | substring/prefix of `repositories.name`, including path components | `back` → `team/backend` |
+| Tag | tag name, across all repositories or within one | `v1.2` → `backend:v1.2.0`, `api:v1.2.3` |
+| Digest | prefix of a manifest or blob digest, with or without `sha256:`; at least 8 hex chars | `089c73da` → manifest in `nginx` (tag `latest`) |
+
+**Design**
+- A digest is detected by shape (hex, ≥ 8 chars, optional `sha256:`). It is
+  answered by an indexed prefix range query on `manifests.digest` and
+  `blobs.digest` (`digest >= ? AND digest < ?`). A blob hit is resolved to the
+  manifests/tags that reference it. This needs a `manifest_blobs` reference
+  table (populated in `PutManifest`; also speeds up GC marking).
+- Names and tags use an SQLite **FTS5** table (confirmed available in
+  `modernc.org/sqlite`), kept in sync by triggers on `repositories` and `tags`.
+  Use the `trigram` tokenizer so substrings like `kend` match `backend`.
+- Results are capped (default 50) and grouped by type.
+
+**Interfaces**
+- `GET /api/search?q=<query>[&type=repo|tag|digest][&repo=<name>]` →
+  `{"repositories":[…], "tags":[{"repository","tag","digest"}], "digests":[{"digest","kind":"manifest|blob","repositories":[…]}]}`
+- UI: search box in the nav bar with htmx live results (`hx-trigger="keyup changed delay:300ms"`).
+- CLI: `regctl search <query> [-type tag]`.
+
+**Acceptance:** each example in the table above returns the expected hit; a
+query that matches nothing returns empty arrays, not 404; p95 < 50 ms with
+10k repositories and 100k tags.
+
+### S2 — Image size analysis
+
+**Goal:** show how big an image is and where the bytes are, e.g.:
+
+```
+backend:latest           2.1 GB
+  largest layer:       800 MB   sha256:3f1a…  (40% of image)
+  layers: 14   config: 9 KB   shared with other images: 1.2 GB
+```
+
+**Definitions** (state them in the UI; users conflate these)
+
+| Metric | Source |
+|---|---|
+| **Image size** | sum of config + layer descriptor `size` values = compressed bytes a client downloads |
+| **Largest layer** | max layer descriptor `size` |
+| **Shared bytes** | layers also referenced by another manifest in the registry |
+| **Unique bytes** | image size − shared bytes = what deleting this image could free in GC |
+
+Sizes are **compressed** (transfer) sizes. Uncompressed size would require
+decompressing every layer. It is out of scope for v1 but could later be
+computed lazily and cached.
+
+**Design**
+- Computed from the stored manifest JSON plus the `manifest_blobs` table from
+  S1. Descriptor sizes are cross-checked against `blobs.size`; a mismatch is
+  flagged, not silently trusted.
+- For an index / manifest list: one row per platform, plus the deduplicated
+  total across platforms.
+- Repository-level view: total and unique bytes per repository, sortable on
+  the dashboard ("what is using my disk?").
+
+**Interfaces**
+- `GET /api/repos/{name}/manifests/{ref}/size` → `{"total","config","largest_layer":{"digest","size"},"layers":[{"digest","size","media_type","shared"}],"unique","shared","platforms":[…]}`
+- UI: size column on the repo/tag tables; per-layer bar chart on the tag page.
+- CLI: `regctl size <repo>:<tag>` (output as above, human-readable units).
+
+**Acceptance:** for a pushed `nginx` image, the total equals the sum of
+`docker manifest inspect` layer sizes plus config; for an image that shares a
+base with another, unique + shared = total, and unique matches GC's freed
+bytes after deleting that image alone.
+
+### S3 — Vulnerability scanning (Trivy)
+
+**Goal:** scan pushed images for known CVEs and show results per tag.
+
+**Integration choice:** run the **external `trivy` binary** (optional,
+`-trivy-path`; the feature is disabled if absent). Do not link Trivy as a Go
+library: it would multiply binary size and dependencies, which conflicts with
+the single-lean-binary goal. Trivy scans the image *through this registry*
+(`trivy image --insecure localhost:<port>/<repo>@<digest> --format json`),
+so no image export is needed. Trivy server mode (`trivy server`) is a later
+option for faster repeated scans.
+
+**Design**
+- Scans are **asynchronous**. `PutManifest` enqueues a job in a `scan_jobs`
+  table and a bounded worker pool (default 1) processes it; pushes never wait
+  for a scan.
+- Results are keyed by **manifest digest** (content-addressed), so the same
+  image in several repositories is scanned once. Table `scan_results(digest,
+  scanned_at, scanner_version, db_version, critical, high, medium, low, report
+  BLOB)`; the full JSON report is stored compressed.
+- Rescan when the Trivy vulnerability DB changes (scheduled, e.g. daily), and
+  on demand.
+- Index / multi-platform images: scan each platform manifest; the tag shows
+  the worst result.
+- **Operational constraints:** Trivy downloads its vulnerability DB from the
+  internet. Support `-trivy-cache-dir`, and offline mode (`--skip-db-update`
+  with a pre-seeded DB). Once R1 lands, the scanner needs a service
+  credential to pull from the registry.
+- Scan results are advisory. Blocking pulls of vulnerable images (policy
+  enforcement) is a separate, later decision.
+
+**Interfaces**
+- `POST /api/scan/{name}/{ref}` (enqueue) · `GET /api/scan/{name}/{ref}` →
+  summary + `status` (`pending|running|done|failed|unsupported`) · `GET …?full=true` → full report.
+- UI: severity badges (C/H/M/L counts) on tag rows; findings table on the tag
+  page (CVE, package, installed → fixed version, severity).
+- CLI: `regctl scan <repo>:<tag> [-wait] [-severity HIGH,CRITICAL]` (exit
+  non-zero if findings at or above the threshold, for CI use).
+
+**Acceptance:** pushing a known-vulnerable image (e.g. an old `alpine`
+release) produces a `done` result with non-zero counts without delaying the
+push; the registry runs normally with Trivy absent (`unsupported` status);
+a scan failure is recorded and retried with backoff, never lost silently.
+
+### S4 — OCI artifacts: Helm charts, SBOMs, signatures
+
+**Goal:** treat non-image OCI artifacts as first-class: store, browse,
+discover and garbage-collect them correctly.
+
+**Current state (verified):** the registry already *accepts* these. A Helm
+chart (OCI manifest with `application/vnd.cncf.helm.config.v1+json` config)
+and a cosign-style signature (empty config `application/vnd.oci.empty.v1+json`,
+`artifactType`, `subject`, tag `sha256-<hex>.sig`) both push successfully.
+What is missing:
+
+| Gap | Effect today |
+|---|---|
+| Referrers API (`GET /v2/<name>/referrers/<digest>`) returns 404 | Clients fall back to the tag scheme. `oras discover` / `cosign tree` can't list attached artifacts |
+| No `OCI-Subject` header on manifest PUT | Clients don't know the registry understands `subject` |
+| UI treats everything as an image | Signature tags (`sha256-….sig`) clutter tag lists; charts show meaningless "layers" |
+| GC (and R9 delete-untagged) ignore `subject` | Deleting an image leaves its signatures/SBOMs orphaned. Untagged referrers would be deleted by R9 |
+
+**Design**
+- **Referrers (R8, prerequisite):** store `subject_digest` and
+  `artifact_type` columns on `manifests` (filled by `PutManifest`). Serve
+  `GET /v2/<name>/referrers/<digest>[?artifactType=]` as an OCI index of
+  descriptors (with `artifactType` and `annotations`). Return `OCI-Subject:
+  <digest>` on PUT when `subject` is present.
+- **Artifact kind detection**, stored per manifest: `artifactType`, else
+  config media type → `image | helm-chart | sbom | signature | attestation | other`.
+  Known types: Helm (`application/vnd.cncf.helm.config.v1+json`), SBOMs
+  (`application/spdx+json`, `application/vnd.cyclonedx+json`), signatures
+  (cosign `application/vnd.dev.cosign.artifact.sig.v1+json`, Notary v2
+  `application/vnd.cncf.notary.signature`), in-toto attestations.
+- **Lifecycle:** referrers live and die with their subject. Deleting a
+  manifest deletes its referrers (recursively), and GC/R9 never treat a
+  referrer with a live subject as untagged garbage.
+- **Media-type safety (D8):** the manifest media-type allow-list stays as is
+  (artifacts use the OCI manifest type). Never serve artifact *blob* content
+  with a client-chosen `Content-Type` (it stays `application/octet-stream` +
+  `nosniff`).
+
+**Interfaces**
+- UI: kind badge per tag; Helm chart page (name, version, appVersion from the
+  config blob); an "Attached" panel on the tag page listing signatures, SBOMs
+  and attestations via referrers; signature tags hidden from tag lists by
+  default (toggle to show).
+- Admin API: `kind` and `artifact_type` in tag and manifest responses;
+  `GET /api/repos/{name}/manifests/{ref}/referrers`.
+- SBOMs can feed S3 later (Trivy can scan an SBOM instead of the image).
+
+**Acceptance** (each with the real client in CI, see R7):
+- `helm push chart.tgz oci://localhost:<port>/charts` and `helm pull` round-trip;
+- `cosign sign` then `cosign verify` (key pair), and `cosign tree` lists the signature;
+- `oras attach --artifact-type application/spdx+json` then `oras discover` lists the SBOM;
+- deleting the signed image removes its signature and SBOM manifests, and the
+  following GC frees their blobs.

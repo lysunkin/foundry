@@ -24,11 +24,14 @@ A local Docker/OCI container registry in a single Go binary.
 ## Quick Start
 
 ```bash
+make run                     # build, then serve ./data on :8080
+# or
 make build
 ./foundry-registry -data ./data -addr :8080
 ```
 
-Open http://localhost:8080 in your browser.
+Open http://localhost:8080 in your browser. `make run` accepts the same
+settings as Make variables, e.g. `make run ADDR=127.0.0.1:5000 DATA_DIR=/tmp/reg`.
 
 ### Server flags
 
@@ -58,6 +61,9 @@ docker tag nginx localhost:8080/nginx:latest
 docker push localhost:8080/nginx:latest
 docker pull localhost:8080/nginx:latest
 ```
+
+`make test-push` does the same round trip as `localhost:8080/nginx:test`
+against a running registry. It needs a local `nginx` image (`docker pull nginx`).
 
 ### Docker in a VM (colima, Docker Desktop)
 
@@ -182,20 +188,53 @@ the server runs can capture an inconsistent SQLite WAL.
 
 ## Development
 
-Requires Go 1.26+ and [golangci-lint](https://golangci-lint.run/) v2.
+Requires Go 1.26+ and [golangci-lint](https://golangci-lint.run/) v2
+(`brew install golangci-lint`). Run `make help` to list all targets.
+
+| Target | Description |
+|--------|-------------|
+| **Build & run** | |
+| `make build` | Build `foundry-registry` and `regctl` (default target) |
+| `make run` | Build, then run the registry with `DATA_DIR` and `ADDR` |
+| `make tidy` | `go mod tidy` |
+| **Code quality** | |
+| `make fmt` | Format code (gofmt + goimports, via golangci-lint) |
+| `make fmt-check` | Fail if any file is not formatted |
+| `make vet` | `go vet ./...` |
+| `make lint` | golangci-lint with [.golangci.yml](.golangci.yml) |
+| `make lint-fix` | golangci-lint, applying automatic fixes |
+| `make check` | `fmt-check` + `vet` + `lint` + `test-race`. Run before pushing |
+| **Tests** | |
+| `make test` | All tests |
+| `make test-race` | All tests with the race detector |
+| `make test-integration` | End-to-end HTTP tests only (verbose) |
+| `make test-push` | Docker push/pull of `nginx` through a running registry |
+| **colima** (see [Docker in a VM](#docker-in-a-vm-colima-docker-desktop)) | |
+| `make colima-forward` | Let the colima VM reach this registry as `localhost:<port>` |
+| `make colima-forward-down` | Remove the forward |
+| `make colima-forward-status` | Show whether the forward is active |
+| **Cleanup** | |
+| `make clean` | Remove built binaries (keeps registry data) |
+| `make clean-data` | **Delete `DATA_DIR`**, after a `y/N` confirmation |
+
+Variables can be overridden on the command line:
+
+| Variable | Default | Used by |
+|----------|---------|---------|
+| `ADDR` | `:8080` | `run`, `test-push`; its port is used by `colima-forward*` |
+| `DATA_DIR` | `./data` | `run`, `clean-data` |
+| `GOLANGCI_LINT` | `golangci-lint` | `fmt`, `fmt-check`, `lint`, `lint-fix` |
+
+Example, serving on port 5000 for colima's Docker:
 
 ```bash
-make help              # list targets
-make build             # build foundry-registry and regctl
-make test              # all tests
-make test-race         # all tests with the race detector
-make test-integration  # end-to-end HTTP tests only
-make fmt / fmt-check   # format / verify formatting
-make lint              # golangci-lint (.golangci.yml)
-make check             # fmt-check + vet + lint + test-race (CI gate)
-make clean             # remove binaries (keeps data)
-make clean-data        # delete ./data (asks for confirmation)
+make run ADDR=:5000                # terminal 1 (stays in the foreground)
+make colima-forward ADDR=:5000     # terminal 2
+docker push localhost:5000/nginx:latest
 ```
+
+CI ([.github/workflows/go.yml](.github/workflows/go.yml)) currently runs
+`make build` and `make test` on pushes and pull requests to `main`.
 
 See [docs/DEVELOPMENT_SPEC.md](docs/DEVELOPMENT_SPEC.md) for the design,
 invariants and roadmap.
