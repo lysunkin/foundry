@@ -10,6 +10,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 
+	"github.com/foundry/registry/internal/auth"
 	"github.com/foundry/registry/internal/registry/handlers"
 	"github.com/foundry/registry/internal/registry/services"
 	"github.com/foundry/registry/internal/registry/storage"
@@ -26,6 +27,12 @@ type Config struct {
 	// so production callers should set them explicitly (cmd/registry does).
 	GCGracePeriod time.Duration
 	UploadTTL     time.Duration
+
+	// Users enables HTTP Basic authentication when non-nil.
+	Users *auth.Htpasswd
+	// AnonymousPull allows unauthenticated reads (pull, browse) when Users
+	// is set. The zero value requires authentication for everything.
+	AnonymousPull bool
 }
 
 // Server wraps the HTTP router and its dependencies.
@@ -53,6 +60,10 @@ func New(
 	r.Use(middleware.RequestID)
 	r.Use(middleware.Logger)
 	r.Use(middleware.Recoverer)
+	// CSRF: reject unsafe cross-site browser requests. Always on; non-browser
+	// clients (docker, regctl, curl) send no Sec-Fetch-Site/Origin and pass.
+	r.Use(http.NewCrossOriginProtection().Handler)
+	r.Use(handlers.RequireAuth(handlers.AuthConfig{Users: cfg.Users, AnonymousRead: cfg.AnonymousPull}))
 
 	r.Handle("/static/*", http.StripPrefix("/static/", http.FileServer(http.FS(staticSub))))
 

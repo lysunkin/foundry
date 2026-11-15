@@ -12,7 +12,9 @@
 package main
 
 import (
+	"bufio"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -25,14 +27,25 @@ import (
 
 var (
 	registryURL = envOr("FOUNDRY_URL", "http://localhost:8080")
+	username    = os.Getenv("FOUNDRY_USER")
+	password    = os.Getenv("FOUNDRY_PASSWORD")
 	client      = &http.Client{Timeout: 30 * time.Second}
 )
 
 func main() {
 	flag.StringVar(&registryURL, "registry", registryURL, "registry base URL")
+	flag.StringVar(&username, "user", username, "username for registries with authentication")
+	passwordStdin := flag.Bool("password-stdin", false, "read the password from stdin")
 	flag.Usage = usage
 	flag.Parse()
 	registryURL = strings.TrimRight(registryURL, "/")
+	if *passwordStdin {
+		p, err := readPassword(os.Stdin)
+		if err != nil {
+			fatalf("error: %v\n", err)
+		}
+		password = p
+	}
 
 	args := flag.Args()
 	if len(args) == 0 {
@@ -201,6 +214,9 @@ func apiDo(method, path string, out any) error {
 	if err != nil {
 		return err
 	}
+	if username != "" {
+		req.SetBasicAuth(username, password)
+	}
 	resp, err := client.Do(req)
 	if err != nil {
 		return fmt.Errorf("request: %w", err)
@@ -210,6 +226,9 @@ func apiDo(method, path string, out any) error {
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return err
+	}
+	if resp.StatusCode == http.StatusUnauthorized {
+		return errors.New("authentication required (set FOUNDRY_USER/FOUNDRY_PASSWORD, or -user with -password-stdin)")
 	}
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
 		var apiErr struct {
@@ -244,6 +263,20 @@ func splitRef(ref string) (repo, reference string, isDigest bool, err error) {
 	return ref[:idx], ref[idx+1:], false, nil
 }
 
+// readPassword reads a single line (the password) from r, without the
+// trailing newline.
+func readPassword(r io.Reader) (string, error) {
+	line, err := bufio.NewReader(r).ReadString('\n')
+	if err != nil && !errors.Is(err, io.EOF) {
+		return "", fmt.Errorf("read password: %w", err)
+	}
+	line = strings.TrimRight(line, "\r\n")
+	if line == "" {
+		return "", errors.New("read password: empty password on stdin")
+	}
+	return line, nil
+}
+
 func humanBytes(n int64) string {
 	const unit = 1024
 	if n < unit {
@@ -271,10 +304,14 @@ Commands:
   gc [-dry-run]            Run garbage collection
 
 Environment:
-  FOUNDRY_URL   Registry base URL (default: http://localhost:8080)
+  FOUNDRY_URL        Registry base URL (default: http://localhost:8080)
+  FOUNDRY_USER       Username, if the registry requires authentication
+  FOUNDRY_PASSWORD   Password for FOUNDRY_USER
 
 Flags (must precede the command):
-  -registry <url>   Override registry URL`)
+  -registry <url>    Override registry URL
+  -user <name>       Override FOUNDRY_USER
+  -password-stdin    Read the password from stdin instead of FOUNDRY_PASSWORD`)
 }
 
 func fatalf(format string, args ...any) {

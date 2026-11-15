@@ -34,7 +34,7 @@ func NewWebHandler(
 
 func (h *WebHandler) Mount(r chi.Router) {
 	r.Get("/", h.dashboard)
-	r.Post("/ui/gc", h.runGC)
+	r.With(RequireHTMX).Post("/ui/gc", h.runGC)
 	// Repository names may contain '/', see routing.go.
 	r.HandleFunc("/ui/repo/*", nameRouter(
 		route{suffix: "/tags", methods: map[string]http.HandlerFunc{http.MethodGet: h.repoTagsFragment}},
