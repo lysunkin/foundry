@@ -5,6 +5,7 @@
 package handlers
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -138,7 +139,7 @@ func (h *RegistryHandler) catalog(w http.ResponseWriter, r *http.Request) {
 	if n > 0 {
 		fetch = n + 1
 	}
-	names, err := h.repo.ListRepositoryNames(fetch, last)
+	names, err := h.repo.ListRepositoryNames(r.Context(), fetch, last)
 	if err != nil {
 		serverError(w, r, err)
 		return
@@ -198,7 +199,7 @@ func (h *RegistryHandler) deleteBlob(w http.ResponseWriter, r *http.Request, nam
 		serverError(w, r, err)
 		return
 	}
-	known, dbErr := h.repo.BlobExists(digest)
+	known, dbErr := h.repo.BlobExists(r.Context(), digest)
 	if dbErr != nil {
 		serverError(w, r, dbErr)
 		return
@@ -207,7 +208,7 @@ func (h *RegistryHandler) deleteBlob(w http.ResponseWriter, r *http.Request, nam
 		registryError(w, http.StatusNotFound, oci.ErrCodeBlobUnknown, "blob unknown to registry")
 		return
 	}
-	if err := h.repo.DeleteBlob(digest); err != nil {
+	if err := h.repo.DeleteBlob(r.Context(), digest); err != nil {
 		serverError(w, r, err)
 		return
 	}
@@ -236,9 +237,9 @@ func (h *RegistryHandler) startUpload(w http.ResponseWriter, r *http.Request, na
 	// Cross-repository mount: blobs are stored globally, so any blob the
 	// registry already has can be "mounted" instantly.
 	if mount := q.Get("mount"); mount != "" && oci.ValidDigest(mount) {
-		if ok, err := h.repo.BlobExists(mount); err == nil && ok {
+		if ok, err := h.repo.BlobExists(r.Context(), mount); err == nil && ok {
 			if exists, _ := h.blobs.Exists(mount); exists {
-				if _, err := h.repo.EnsureRepository(name); err != nil {
+				if _, err := h.repo.EnsureRepository(r.Context(), name); err != nil {
 					serverError(w, r, err)
 					return
 				}
@@ -257,7 +258,7 @@ func (h *RegistryHandler) startUpload(w http.ResponseWriter, r *http.Request, na
 		return
 	}
 
-	repo, err := h.repo.EnsureRepository(name)
+	repo, err := h.repo.EnsureRepository(r.Context(), name)
 	if err != nil {
 		serverError(w, r, err)
 		return
@@ -269,8 +270,8 @@ func (h *RegistryHandler) startUpload(w http.ResponseWriter, r *http.Request, na
 		serverError(w, r, err)
 		return
 	}
-	if err := h.repo.SaveUpload(id, tmpPath, repo.ID, 0); err != nil {
-		h.discardUpload(id)
+	if err := h.repo.SaveUpload(r.Context(), id, tmpPath, repo.ID, 0); err != nil {
+		h.discardUpload(r.Context(), id)
 		serverError(w, r, err)
 		return
 	}
@@ -285,7 +286,7 @@ func (h *RegistryHandler) monolithicPush(w http.ResponseWriter, r *http.Request,
 		registryError(w, http.StatusBadRequest, oci.ErrCodeDigestInvalid, "invalid digest")
 		return
 	}
-	if _, err := h.repo.EnsureRepository(name); err != nil {
+	if _, err := h.repo.EnsureRepository(r.Context(), name); err != nil {
 		serverError(w, r, err)
 		return
 	}
@@ -300,7 +301,7 @@ func (h *RegistryHandler) monolithicPush(w http.ResponseWriter, r *http.Request,
 		serverError(w, r, err)
 		return
 	}
-	if err := h.repo.SaveBlob(digest, size); err != nil {
+	if err := h.repo.SaveBlob(r.Context(), digest, size); err != nil {
 		serverError(w, r, err)
 		return
 	}
@@ -316,7 +317,7 @@ func (h *RegistryHandler) loadUpload(w http.ResponseWriter, r *http.Request, nam
 		registryError(w, http.StatusNotFound, oci.ErrCodeBlobUploadUnknown, "blob upload unknown")
 		return "", 0, false
 	}
-	upload, err := h.repo.GetRepoUpload(name, id)
+	upload, err := h.repo.GetRepoUpload(r.Context(), name, id)
 	if err != nil {
 		if errors.Is(err, services.ErrNotFound) {
 			registryError(w, http.StatusNotFound, oci.ErrCodeBlobUploadUnknown, "blob upload unknown")
@@ -381,7 +382,7 @@ func (h *RegistryHandler) patchUpload(w http.ResponseWriter, r *http.Request, na
 		serverError(w, r, err)
 		return
 	}
-	if err := h.repo.UpdateUploadOffset(id, newOffset); err != nil {
+	if err := h.repo.UpdateUploadOffset(r.Context(), id, newOffset); err != nil {
 		serverError(w, r, err)
 		return
 	}
@@ -418,7 +419,7 @@ func (h *RegistryHandler) putUpload(w http.ResponseWriter, r *http.Request, name
 	}
 
 	// The session is finished whatever happens next.
-	cleanup := func() { h.discardUpload(id) }
+	cleanup := func() { h.discardUpload(r.Context(), id) }
 
 	if err := h.blobs.PutAt(digest, h.uploads.Path(id), offset); err != nil {
 		cleanup()
@@ -431,7 +432,7 @@ func (h *RegistryHandler) putUpload(w http.ResponseWriter, r *http.Request, name
 	}
 	cleanup()
 
-	if err := h.repo.SaveBlob(digest, offset); err != nil {
+	if err := h.repo.SaveBlob(r.Context(), digest, offset); err != nil {
 		serverError(w, r, err)
 		return
 	}
@@ -443,11 +444,13 @@ func (h *RegistryHandler) putUpload(w http.ResponseWriter, r *http.Request, name
 
 // discardUpload removes an upload session's temp file and DB row. Failures are
 // logged rather than returned: leftovers are reclaimed by GC (upload TTL).
-func (h *RegistryHandler) discardUpload(id string) {
+// It ignores ctx cancellation: the session must be discarded even when the
+// request that finished it was cancelled.
+func (h *RegistryHandler) discardUpload(ctx context.Context, id string) {
 	if err := h.uploads.Delete(id); err != nil {
 		log.Printf("discard upload %s: remove temp file: %v", id, err) //nolint:gosec // G706: id validated by storage.ValidUploadID
 	}
-	if err := h.repo.DeleteUpload(id); err != nil {
+	if err := h.repo.DeleteUpload(context.WithoutCancel(ctx), id); err != nil {
 		log.Printf("discard upload %s: delete db row: %v", id, err) //nolint:gosec // G706: id validated by storage.ValidUploadID
 	}
 }
@@ -461,7 +464,7 @@ func (h *RegistryHandler) deleteUpload(w http.ResponseWriter, r *http.Request, n
 		serverError(w, r, err)
 		return
 	}
-	if err := h.repo.DeleteUpload(id); err != nil {
+	if err := h.repo.DeleteUpload(r.Context(), id); err != nil {
 		serverError(w, r, err)
 		return
 	}
@@ -495,7 +498,7 @@ func (h *RegistryHandler) getManifest(w http.ResponseWriter, r *http.Request, na
 	if !ok {
 		return
 	}
-	m, err := h.repo.GetManifest(name, reference)
+	m, err := h.repo.GetManifest(r.Context(), name, reference)
 	if err != nil {
 		if errors.Is(err, services.ErrNotFound) {
 			registryError(w, http.StatusNotFound, oci.ErrCodeManifestUnknown, "manifest unknown")
@@ -539,7 +542,7 @@ func (h *RegistryHandler) putManifest(w http.ResponseWriter, r *http.Request, na
 	}
 
 	mediaType := services.ResolveManifestMediaType(r.Header.Get("Content-Type"), content)
-	digest, err := h.repo.PutManifest(name, reference, mediaType, content)
+	digest, err := h.repo.PutManifest(r.Context(), name, reference, mediaType, content)
 	switch {
 	case err == nil:
 	case errors.Is(err, services.ErrDigestMismatch):
@@ -569,9 +572,9 @@ func (h *RegistryHandler) deleteManifest(w http.ResponseWriter, r *http.Request,
 	}
 	var err error
 	if oci.IsDigestReference(reference) {
-		err = h.repo.DeleteManifest(name, reference)
+		err = h.repo.DeleteManifest(r.Context(), name, reference)
 	} else {
-		err = h.repo.DeleteTag(name, reference)
+		err = h.repo.DeleteTag(r.Context(), name, reference)
 	}
 	if err != nil {
 		if errors.Is(err, services.ErrNotFound) {
@@ -593,7 +596,7 @@ func (h *RegistryHandler) listTags(w http.ResponseWriter, r *http.Request, name 
 	if !ok {
 		return
 	}
-	tags, err := h.repo.ListTags(name)
+	tags, err := h.repo.ListTags(r.Context(), name)
 	if err != nil {
 		if errors.Is(err, services.ErrNotFound) {
 			registryError(w, http.StatusNotFound, oci.ErrCodeNameUnknown, "repository name not known to registry")

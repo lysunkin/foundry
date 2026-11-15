@@ -25,7 +25,7 @@ func TestMigration002_UpgradesExistingData(t *testing.T) {
 	mustExec(t, old, `INSERT INTO tags (repository_id, tag, manifest_digest) VALUES (1, 'latest', 'sha256:m')`)
 	old.Close()
 
-	d, err := Open(path)
+	d, err := Open(t.Context(), path)
 	if err != nil {
 		t.Fatalf("Open (migrate): %v", err)
 	}

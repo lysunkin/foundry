@@ -61,7 +61,7 @@ func newRegistryServerWithConfig(t *testing.T, configure func(*registry.Config))
 	dataDir := t.TempDir()
 	dbPath := filepath.Join(dataDir, "registry.db")
 
-	database, err := db.Open(dbPath)
+	database, err := db.Open(t.Context(), dbPath)
 	if err != nil {
 		t.Fatalf("db.Open: %v", err)
 	}

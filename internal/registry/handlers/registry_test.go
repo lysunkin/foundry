@@ -46,7 +46,7 @@ func TestBlob_HeadFound(t *testing.T) {
 	if _, _, err := ts.blobs.Put(bytes.NewReader(data)); err != nil {
 		t.Fatal(err)
 	}
-	ts.svc.SaveBlob(d, int64(len(data)))
+	ts.svc.SaveBlob(t.Context(), d, int64(len(data)))
 
 	rr := ts.do(t, http.MethodHead, "/v2/myrepo/blobs/"+d, nil, nil)
 	mustStatus(t, rr, http.StatusOK)
@@ -74,7 +74,7 @@ func TestBlob_GetFound(t *testing.T) {
 	ts := newTestServer(t)
 	data := []byte("downloadable blob")
 	d, _, _ := ts.blobs.Put(bytes.NewReader(data))
-	ts.svc.SaveBlob(d, int64(len(data)))
+	ts.svc.SaveBlob(t.Context(), d, int64(len(data)))
 
 	rr := ts.do(t, http.MethodGet, "/v2/myrepo/blobs/"+d, nil, nil)
 	mustStatus(t, rr, http.StatusOK)
@@ -90,7 +90,7 @@ func TestBlob_Delete(t *testing.T) {
 	ts := newTestServer(t)
 	data := []byte("delete me")
 	d, _, _ := ts.blobs.Put(bytes.NewReader(data))
-	ts.svc.SaveBlob(d, int64(len(data)))
+	ts.svc.SaveBlob(t.Context(), d, int64(len(data)))
 
 	rr := ts.do(t, http.MethodDelete, "/v2/myrepo/blobs/"+d, nil, nil)
 	mustStatus(t, rr, http.StatusAccepted)
@@ -285,7 +285,7 @@ const ociManifestMediaType = "application/vnd.oci.image.manifest.v1+json"
 // MANIFEST_BLOB_UNKNOWN validation.
 func seedBlobRecord(t *testing.T, ts *testServer, d string) {
 	t.Helper()
-	if err := ts.svc.SaveBlob(d, 1); err != nil {
+	if err := ts.svc.SaveBlob(t.Context(), d, 1); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -370,8 +370,8 @@ func TestManifest_HeadFound(t *testing.T) {
 	ts := newTestServer(t)
 	content := sampleManifest()
 	d := digest(content)
-	ts.svc.SaveManifest("repo", d, ociManifestMediaType, content)
-	ts.svc.SaveTag("repo", "latest", d)
+	ts.svc.SaveManifest(t.Context(), "repo", d, ociManifestMediaType, content)
+	ts.svc.SaveTag(t.Context(), "repo", "latest", d)
 
 	rr := ts.do(t, http.MethodHead, "/v2/repo/manifests/latest", nil, nil)
 	mustStatus(t, rr, http.StatusOK)
@@ -385,7 +385,7 @@ func TestManifest_HeadFound(t *testing.T) {
 
 func TestManifest_GetNotFound(t *testing.T) {
 	ts := newTestServer(t)
-	ts.svc.EnsureRepository("empty")
+	ts.svc.EnsureRepository(t.Context(), "empty")
 
 	rr := ts.do(t, http.MethodGet, "/v2/empty/manifests/latest", nil, nil)
 	mustStatus(t, rr, http.StatusNotFound)
@@ -403,8 +403,8 @@ func TestManifest_DeleteByDigest(t *testing.T) {
 	ts := newTestServer(t)
 	content := sampleManifest()
 	d := digest(content)
-	ts.svc.SaveManifest("repo", d, ociManifestMediaType, content)
-	ts.svc.SaveTag("repo", "v1", d)
+	ts.svc.SaveManifest(t.Context(), "repo", d, ociManifestMediaType, content)
+	ts.svc.SaveTag(t.Context(), "repo", "v1", d)
 
 	rr := ts.do(t, http.MethodDelete, "/v2/repo/manifests/"+d, nil, nil)
 	mustStatus(t, rr, http.StatusAccepted)
@@ -441,9 +441,9 @@ func TestTagsList(t *testing.T) {
 
 	content := sampleManifest()
 	d := digest(content)
-	ts.svc.SaveManifest("myrepo", d, ociManifestMediaType, content)
+	ts.svc.SaveManifest(t.Context(), "myrepo", d, ociManifestMediaType, content)
 	for _, tag := range []string{"v1", "v2", "latest"} {
-		ts.svc.SaveTag("myrepo", tag, d)
+		ts.svc.SaveTag(t.Context(), "myrepo", tag, d)
 	}
 
 	rr := ts.do(t, http.MethodGet, "/v2/myrepo/tags/list", nil, nil)

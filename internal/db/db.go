@@ -1,6 +1,7 @@
 package db
 
 import (
+	"context"
 	"database/sql"
 	"embed"
 	"fmt"
@@ -16,7 +17,7 @@ var migrations embed.FS
 
 // Open opens (or creates) the SQLite database at path, applies migrations,
 // and configures pragmas appropriate for a single-process registry.
-func Open(path string) (*sql.DB, error) {
+func Open(ctx context.Context, path string) (*sql.DB, error) {
 	db, err := sql.Open("sqlite", path+"?_busy_timeout=5000&_journal_mode=WAL&_synchronous=NORMAL&_foreign_keys=ON")
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite: %w", err)
@@ -25,16 +26,16 @@ func Open(path string) (*sql.DB, error) {
 	// Single writer – avoid "database is locked" in production.
 	db.SetMaxOpenConns(1)
 
-	if err := runMigrations(db); err != nil {
+	if err := runMigrations(ctx, db); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("migrations: %w", err)
 	}
 	return db, nil
 }
 
-func runMigrations(db *sql.DB) error {
+func runMigrations(ctx context.Context, db *sql.DB) error {
 	// Ensure the migrations table exists first.
-	_, err := db.Exec(`CREATE TABLE IF NOT EXISTS schema_migrations (
+	_, err := db.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS schema_migrations (
 		version    INTEGER PRIMARY KEY,
 		applied_at DATETIME DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
 	)`)
@@ -63,7 +64,7 @@ func runMigrations(db *sql.DB) error {
 		}
 
 		var count int
-		if err := db.QueryRow(`SELECT COUNT(*) FROM schema_migrations WHERE version = ?`, version).Scan(&count); err != nil {
+		if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM schema_migrations WHERE version = ?`, version).Scan(&count); err != nil {
 			return err
 		}
 		if count > 0 {
@@ -75,15 +76,15 @@ func runMigrations(db *sql.DB) error {
 			return err
 		}
 
-		tx, err := db.Begin()
+		tx, err := db.BeginTx(ctx, nil)
 		if err != nil {
 			return err
 		}
-		if _, err := tx.Exec(string(content)); err != nil {
+		if _, err := tx.ExecContext(ctx, string(content)); err != nil {
 			tx.Rollback()
 			return fmt.Errorf("apply migration %s: %w", entry.Name(), err)
 		}
-		if _, err := tx.Exec(`INSERT INTO schema_migrations (version) VALUES (?)`, version); err != nil {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO schema_migrations (version) VALUES (?)`, version); err != nil {
 			tx.Rollback()
 			return err
 		}

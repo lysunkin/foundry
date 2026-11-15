@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"context"
 	"errors"
 	"log"
 	"net/http"
@@ -44,7 +45,7 @@ func (h *WebHandler) Mount(r chi.Router) {
 }
 
 func (h *WebHandler) dashboard(w http.ResponseWriter, r *http.Request) {
-	repos, err := h.repo.ListRepositorySummaries()
+	repos, err := h.repo.ListRepositorySummaries(r.Context())
 	if err != nil {
 		h.fail(w, r, err)
 		return
@@ -54,7 +55,7 @@ func (h *WebHandler) dashboard(w http.ResponseWriter, r *http.Request) {
 
 func (h *WebHandler) repoPage(w http.ResponseWriter, r *http.Request) {
 	name := chi.URLParam(r, "name")
-	tags, err := h.listTags(name)
+	tags, err := h.listTags(r.Context(), name)
 	if err != nil {
 		h.fail(w, r, err)
 		return
@@ -64,7 +65,7 @@ func (h *WebHandler) repoPage(w http.ResponseWriter, r *http.Request) {
 
 func (h *WebHandler) repoTagsFragment(w http.ResponseWriter, r *http.Request) {
 	name := chi.URLParam(r, "name")
-	tags, err := h.listTags(name)
+	tags, err := h.listTags(r.Context(), name)
 	if err != nil {
 		h.fail(w, r, err)
 		return
@@ -79,7 +80,7 @@ func (h *WebHandler) tagPage(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	m, err := h.repo.GetManifest(name, tag)
+	m, err := h.repo.GetManifest(r.Context(), name, tag)
 	if err != nil {
 		h.fail(w, r, err)
 		return
@@ -93,7 +94,7 @@ func (h *WebHandler) tagPage(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *WebHandler) runGC(w http.ResponseWriter, r *http.Request) {
-	result, err := services.GarbageCollect(h.repo, h.blobs, h.uploads, h.gcOpts)
+	result, err := services.GarbageCollect(r.Context(), h.repo, h.blobs, h.uploads, h.gcOpts)
 	if err != nil {
 		h.fail(w, r, err)
 		return
@@ -101,11 +102,11 @@ func (h *WebHandler) runGC(w http.ResponseWriter, r *http.Request) {
 	h.render(w, r, "gc_result.html", result)
 }
 
-func (h *WebHandler) listTags(name string) (any, error) {
+func (h *WebHandler) listTags(ctx context.Context, name string) (any, error) {
 	if !oci.ValidName(name) {
 		return nil, services.ErrNotFound
 	}
-	return h.repo.ListTags(name)
+	return h.repo.ListTags(ctx, name)
 }
 
 func (h *WebHandler) fail(w http.ResponseWriter, r *http.Request, err error) {

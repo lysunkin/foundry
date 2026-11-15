@@ -69,7 +69,7 @@ func (h *APIHandler) withName(next nameHandler) http.HandlerFunc {
 }
 
 func (h *APIHandler) listRepos(w http.ResponseWriter, r *http.Request) {
-	repos, err := h.repo.ListRepositories()
+	repos, err := h.repo.ListRepositories(r.Context())
 	if err != nil {
 		apiServerError(w, r, err)
 		return
@@ -78,7 +78,7 @@ func (h *APIHandler) listRepos(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *APIHandler) listTags(w http.ResponseWriter, r *http.Request, name string) {
-	tags, err := h.repo.ListTags(name)
+	tags, err := h.repo.ListTags(r.Context(), name)
 	if err != nil {
 		h.notFoundOr(w, r, err, "repository not found")
 		return
@@ -88,7 +88,7 @@ func (h *APIHandler) listTags(w http.ResponseWriter, r *http.Request, name strin
 
 func (h *APIHandler) getManifest(w http.ResponseWriter, r *http.Request, name string) {
 	reference := chi.URLParam(r, "reference")
-	m, err := h.repo.GetManifest(name, reference)
+	m, err := h.repo.GetManifest(r.Context(), name, reference)
 	if err != nil {
 		h.notFoundOr(w, r, err, "manifest not found")
 		return
@@ -109,7 +109,7 @@ func (h *APIHandler) getManifest(w http.ResponseWriter, r *http.Request, name st
 }
 
 func (h *APIHandler) deleteRepo(w http.ResponseWriter, r *http.Request, name string) {
-	if err := h.repo.DeleteRepository(name); err != nil {
+	if err := h.repo.DeleteRepository(r.Context(), name); err != nil {
 		h.notFoundOr(w, r, err, "repository not found")
 		return
 	}
@@ -118,7 +118,7 @@ func (h *APIHandler) deleteRepo(w http.ResponseWriter, r *http.Request, name str
 
 func (h *APIHandler) deleteTag(w http.ResponseWriter, r *http.Request, name string) {
 	tag := chi.URLParam(r, "tag")
-	if err := h.repo.DeleteTag(name, tag); err != nil {
+	if err := h.repo.DeleteTag(r.Context(), name, tag); err != nil {
 		h.notFoundOr(w, r, err, "tag not found")
 		return
 	}
@@ -131,7 +131,7 @@ func (h *APIHandler) deleteManifest(w http.ResponseWriter, r *http.Request, name
 		jsonError(w, http.StatusBadRequest, "invalid digest")
 		return
 	}
-	if err := h.repo.DeleteManifest(name, digest); err != nil {
+	if err := h.repo.DeleteManifest(r.Context(), name, digest); err != nil {
 		h.notFoundOr(w, r, err, "manifest not found")
 		return
 	}
@@ -142,7 +142,7 @@ func (h *APIHandler) deleteManifest(w http.ResponseWriter, r *http.Request, name
 func (h *APIHandler) runGC(w http.ResponseWriter, r *http.Request) {
 	opts := h.gcOpts
 	opts.DryRun = r.URL.Query().Get("dry_run") == "true"
-	result, err := services.GarbageCollect(h.repo, h.blobs, h.uploads, opts)
+	result, err := services.GarbageCollect(r.Context(), h.repo, h.blobs, h.uploads, opts)
 	if err != nil {
 		apiServerError(w, r, err)
 		return

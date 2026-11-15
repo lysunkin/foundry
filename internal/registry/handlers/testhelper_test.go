@@ -29,7 +29,7 @@ type testServer struct {
 func newTestServer(t *testing.T) *testServer {
 	t.Helper()
 
-	database, err := db.Open(filepath.Join(t.TempDir(), "test.db"))
+	database, err := db.Open(t.Context(), filepath.Join(t.TempDir(), "test.db"))
 	if err != nil {
 		t.Fatalf("db.Open: %v", err)
 	}

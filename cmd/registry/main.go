@@ -32,6 +32,11 @@ func main() {
 }
 
 func run() error {
+	// Cancelled on SIGINT/SIGTERM: aborts startup (e.g. migrations) or
+	// triggers graceful shutdown once serving.
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
 	addr := flag.String("addr", envOr("FOUNDRY_ADDR", ":8080"), "listen address")
 	dataDir := flag.String("data", envOr("FOUNDRY_DATA", "./data"), "data directory")
 	gcGrace := flag.Duration("gc-grace", time.Hour, "GC keeps unreferenced blobs younger than this (protects in-flight pushes)")
@@ -60,7 +65,7 @@ func run() error {
 	}
 
 	dbPath := filepath.Join(*dataDir, "registry.db")
-	database, err := db.Open(dbPath)
+	database, err := db.Open(ctx, dbPath)
 	if err != nil {
 		return err
 	}
@@ -93,9 +98,6 @@ func run() error {
 		return err
 	}
 	httpSrv := srv.HTTPServer()
-
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
 
 	errCh := make(chan error, 1)
 	go func() {
