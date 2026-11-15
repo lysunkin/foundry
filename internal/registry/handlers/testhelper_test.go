@@ -29,7 +29,7 @@ type testServer struct {
 func newTestServer(t *testing.T) *testServer {
 	t.Helper()
 
-	database, err := db.Open(filepath.Join(t.TempDir(), "test.db"))
+	database, err := db.Open(t.Context(), filepath.Join(t.TempDir(), "test.db"))
 	if err != nil {
 		t.Fatalf("db.Open: %v", err)
 	}
@@ -57,7 +57,7 @@ func newTestServer(t *testing.T) *testServer {
 // do performs an HTTP request against the test server.
 func (ts *testServer) do(t *testing.T, method, path string, body io.Reader, headers map[string]string) *httptest.ResponseRecorder {
 	t.Helper()
-	req := httptest.NewRequest(method, path, body)
+	req := httptest.NewRequestWithContext(t.Context(), method, path, body)
 	for k, v := range headers {
 		req.Header.Set(k, v)
 	}

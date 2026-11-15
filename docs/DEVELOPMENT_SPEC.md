@@ -293,13 +293,49 @@ remove orphaned blob temp files older than UploadTTL
 | `-auth-anonymous-pull` / `FOUNDRY_AUTH_ANONYMOUS_PULL` | `true` | Anonymous reads when auth is on. Invalid env values fail startup |
 | `FOUNDRY_URL` / `regctl -registry` | `http://localhost:8080` | CLI target |
 | `FOUNDRY_USER`, `FOUNDRY_PASSWORD` / `regctl -user`, `-password-stdin` | empty | CLI credentials (Basic auth) |
+| `regctl -timeout` | `30s` | Per-request timeout, `0` for none. `gc` has none unless set explicitly |
 
-`registry.Config` zero values **disable** grace/TTL (handy in tests). With
+`registry.Config` zero values **disable** grace/TTL (handy in tests).
+Production callers must set them explicitly, as `cmd/registry` does. With
 `Users` set, the zero value of `AnonymousPull` (false) requires auth for
 everything; `cmd/registry` defaults the flag to true.
-Production callers must set them explicitly, as `cmd/registry` does.
 
-The server shuts down gracefully on SIGINT/SIGTERM (30s drain).
+### 6.6 Cancellation and shutdown (R2)
+
+- `context.Context` flows from the request (`r.Context()`) through services
+  (`QueryContext`, `ExecContext`, `BeginTx`) and the storage operations that
+  stream or walk directories (`Put`, `PutVerified`, `Append` via
+  `copyContext`; `AllDigests`, `RemoveStaleTemp`). Single-file storage
+  operations (`Stat`, `Get`, `Delete`, `PutAt`) take no context: they cannot
+  be interrupted mid-syscall.
+- A request is cancelled when its client disconnects or times out, or when
+  shutdown gives up waiting (below).
+- Errors raised while the request context is done are **not** server faults:
+  `serverError`, `apiServerError` and the web `fail` answer 503 "request
+  cancelled" in the API's format and log at info level.
+- Cancelled writes are atomic: `PutManifest` rolls back (D7); a cancelled
+  `Put` commits nothing and removes its temp file (F3). A cancelled `Append`
+  leaves the session's file in an unknown state relative to its DB offset.
+- Upload-session cleanup (`discardUpload`) uses `context.WithoutCancel`, so a
+  finished session is discarded even if its request was cancelled.
+- **GC** checks the context before the mark phase, before each blob and
+  before each expired upload, and returns an error wrapping `ctx.Err()`.
+  Deletions already made stay; every step is idempotent, so the next run
+  continues. A blob's file is deleted before its row, so cancellation can at
+  worst leave a row without a file, which the next GC removes.
+- **Not cancellable:** waiting for `gcLock`. A push blocked behind a long GC
+  waits until GC finishes or is cancelled.
+- **Shutdown** (SIGINT/SIGTERM): stop accepting connections and wait up to
+  30s for in-flight requests; then cancel the request base context
+  (`HTTPServer(base)` sets `BaseContext`) and wait up to 5s more. A second
+  signal terminates immediately. `http.Server.Shutdown` alone does not
+  cancel running handlers, hence the two phases.
+- **Blocked body reads:** cancelling a request context server-side does not
+  interrupt a handler blocked reading a stalled request body (only a client
+  disconnect does). `handlers.AbortReadsOnCancel`, the outermost middleware,
+  sets an immediate read deadline on cancellation so such uploads unwind.
+- **Startup:** `db.Open(ctx, …)` uses the signal context; an interrupted
+  migration rolls back its transaction.
 
 ---
 
@@ -308,9 +344,10 @@ The server shuts down gracefully on SIGINT/SIGTERM (30s drain).
 | Area | Rule |
 |---|---|
 | Formatting | `make fmt` (gofmt + goimports, local prefix `github.com/foundry/registry`). CI runs `make fmt-check` |
-| Linting | `make lint` with `.golangci.yml` (standard + bodyclose, errorlint, gosec, misspell, nilerr, unconvert, usestdlibvars). Zero issues on main. `//nolint` only with a linter name **and** a reason |
+| Linting | `make lint` with `.golangci.yml` (standard + bodyclose, contextcheck, errorlint, gosec, misspell, nilerr, noctx, unconvert, usestdlibvars). Zero issues on main. `//nolint` only with a linter name **and** a reason |
 | Errors | Wrap with `%w`, compare with `errors.Is/As`, no `==` on errors. Never ignore errors silently; log best-effort cleanup failures |
 | Validation | Validate at the HTTP boundary; storage re-validates anything that becomes a path |
+| Context | `ctx` is the first parameter of anything that queries the DB or streams data; pass the caller's context, never `context.Background()` below `main`. Use `context.WithoutCancel` only for cleanup that must finish |
 | SQL | Parameterised queries only. Multi-statement writes in a transaction. Prefer schema constraints (FK/CASCADE) over application-side cleanup |
 | HTTP | Handlers map service errors to status codes in one place per handler; set headers before `WriteHeader` |
 | Tests | Every bug fix ships a regression test that fails without the fix. New endpoints need integration coverage, including repository names with `/` |
@@ -379,7 +416,8 @@ UI POSTs (SameSite cookie + token, or require a custom header that htmx sends).
 *Accept:* `docker login` works; unauthenticated push gets 401 `UNAUTHORIZED`;
 pull stays anonymous unless configured otherwise.
 
-**R2 — Context propagation (high).** Thread `context.Context` from the request
+**R2 — Context propagation (high). Done** (November 2026; see §6.6).
+Original item: thread `context.Context` from the request
 through services (`QueryContext`, `ExecContext`, `BeginTx`) so cancelled
 requests stop DB work and shutdown can drain cleanly. Then re-enable the
 `noctx` linter. *Accept:* `noctx` passes; a cancelled request aborts an

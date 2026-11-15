@@ -1,6 +1,7 @@
 package services
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -37,29 +38,29 @@ func NewRepositoryService(db *sql.DB) *RepositoryService {
 
 // queryer is satisfied by both *sql.DB and *sql.Tx.
 type queryer interface {
-	Exec(query string, args ...any) (sql.Result, error)
-	QueryRow(query string, args ...any) *sql.Row
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
 }
 
 // --- Repositories ---
 
-func (s *RepositoryService) EnsureRepository(name string) (*model.Repository, error) {
-	return ensureRepository(s.db, name)
+func (s *RepositoryService) EnsureRepository(ctx context.Context, name string) (*model.Repository, error) {
+	return ensureRepository(ctx, s.db, name)
 }
 
-func ensureRepository(q queryer, name string) (*model.Repository, error) {
-	if _, err := q.Exec(`INSERT OR IGNORE INTO repositories (name) VALUES (?)`, name); err != nil {
+func ensureRepository(ctx context.Context, q queryer, name string) (*model.Repository, error) {
+	if _, err := q.ExecContext(ctx, `INSERT OR IGNORE INTO repositories (name) VALUES (?)`, name); err != nil {
 		return nil, fmt.Errorf("ensure repo: %w", err)
 	}
-	return getRepository(q, name)
+	return getRepository(ctx, q, name)
 }
 
-func (s *RepositoryService) GetRepository(name string) (*model.Repository, error) {
-	return getRepository(s.db, name)
+func (s *RepositoryService) GetRepository(ctx context.Context, name string) (*model.Repository, error) {
+	return getRepository(ctx, s.db, name)
 }
 
-func getRepository(q queryer, name string) (*model.Repository, error) {
-	row := q.QueryRow(`SELECT id, name, created_at FROM repositories WHERE name = ?`, name)
+func getRepository(ctx context.Context, q queryer, name string) (*model.Repository, error) {
+	row := q.QueryRowContext(ctx, `SELECT id, name, created_at FROM repositories WHERE name = ?`, name)
 	var r model.Repository
 	if err := row.Scan(&r.ID, &r.Name, &r.CreatedAt); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -70,8 +71,8 @@ func getRepository(q queryer, name string) (*model.Repository, error) {
 	return &r, nil
 }
 
-func (s *RepositoryService) ListRepositories() ([]*model.Repository, error) {
-	rows, err := s.db.Query(`SELECT id, name, created_at FROM repositories ORDER BY name`)
+func (s *RepositoryService) ListRepositories(ctx context.Context) ([]*model.Repository, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT id, name, created_at FROM repositories ORDER BY name`)
 	if err != nil {
 		return nil, err
 	}
@@ -95,8 +96,8 @@ type RepositorySummary struct {
 
 // ListRepositorySummaries returns all repositories with their tag counts in a
 // single query.
-func (s *RepositoryService) ListRepositorySummaries() ([]RepositorySummary, error) {
-	rows, err := s.db.Query(`
+func (s *RepositoryService) ListRepositorySummaries(ctx context.Context) ([]RepositorySummary, error) {
+	rows, err := s.db.QueryContext(ctx, `
 		SELECT r.id, r.name, r.created_at, COUNT(t.tag)
 		FROM repositories r
 		LEFT JOIN tags t ON t.repository_id = r.id
@@ -119,12 +120,12 @@ func (s *RepositoryService) ListRepositorySummaries() ([]RepositorySummary, erro
 
 // ListRepositoryNames returns up to n repository names sorted lexically and
 // strictly greater than last (n <= 0 means no limit). Used by /v2/_catalog.
-func (s *RepositoryService) ListRepositoryNames(n int, last string) ([]string, error) {
+func (s *RepositoryService) ListRepositoryNames(ctx context.Context, n int, last string) ([]string, error) {
 	limit := -1
 	if n > 0 {
 		limit = n
 	}
-	rows, err := s.db.Query(`SELECT name FROM repositories WHERE name > ? ORDER BY name LIMIT ?`, last, limit)
+	rows, err := s.db.QueryContext(ctx, `SELECT name FROM repositories WHERE name > ? ORDER BY name LIMIT ?`, last, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -142,8 +143,8 @@ func (s *RepositoryService) ListRepositoryNames(n int, last string) ([]string, e
 
 // DeleteRepository removes a repository and (via ON DELETE CASCADE) all its
 // manifests, tags and upload sessions. Blobs are left for GC.
-func (s *RepositoryService) DeleteRepository(name string) error {
-	res, err := s.db.Exec(`DELETE FROM repositories WHERE name = ?`, name)
+func (s *RepositoryService) DeleteRepository(ctx context.Context, name string) error {
+	res, err := s.db.ExecContext(ctx, `DELETE FROM repositories WHERE name = ?`, name)
 	if err != nil {
 		return err
 	}
@@ -155,13 +156,13 @@ func (s *RepositoryService) DeleteRepository(name string) error {
 
 // --- Blobs ---
 
-func (s *RepositoryService) SaveBlob(digest string, size int64) error {
-	_, err := s.db.Exec(`INSERT OR IGNORE INTO blobs (digest, size) VALUES (?, ?)`, digest, size)
+func (s *RepositoryService) SaveBlob(ctx context.Context, digest string, size int64) error {
+	_, err := s.db.ExecContext(ctx, `INSERT OR IGNORE INTO blobs (digest, size) VALUES (?, ?)`, digest, size)
 	return err
 }
 
-func (s *RepositoryService) GetBlob(digest string) (*model.Blob, error) {
-	row := s.db.QueryRow(`SELECT digest, size, created_at FROM blobs WHERE digest = ?`, digest)
+func (s *RepositoryService) GetBlob(ctx context.Context, digest string) (*model.Blob, error) {
+	row := s.db.QueryRowContext(ctx, `SELECT digest, size, created_at FROM blobs WHERE digest = ?`, digest)
 	var b model.Blob
 	if err := row.Scan(&b.Digest, &b.Size, &b.CreatedAt); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -172,18 +173,18 @@ func (s *RepositoryService) GetBlob(digest string) (*model.Blob, error) {
 	return &b, nil
 }
 
-func (s *RepositoryService) BlobExists(digest string) (bool, error) {
+func (s *RepositoryService) BlobExists(ctx context.Context, digest string) (bool, error) {
 	var count int
-	err := s.db.QueryRow(`SELECT COUNT(*) FROM blobs WHERE digest = ?`, digest).Scan(&count)
+	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM blobs WHERE digest = ?`, digest).Scan(&count)
 	return count > 0, err
 }
 
-func (s *RepositoryService) AllBlobDigests() ([]string, error) {
-	return s.queryStrings(`SELECT digest FROM blobs`)
+func (s *RepositoryService) AllBlobDigests(ctx context.Context) ([]string, error) {
+	return s.queryStrings(ctx, `SELECT digest FROM blobs`)
 }
 
-func (s *RepositoryService) DeleteBlob(digest string) error {
-	_, err := s.db.Exec(`DELETE FROM blobs WHERE digest = ?`, digest)
+func (s *RepositoryService) DeleteBlob(ctx context.Context, digest string) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM blobs WHERE digest = ?`, digest)
 	return err
 }
 
@@ -194,7 +195,7 @@ func (s *RepositoryService) DeleteBlob(digest string) error {
 // digest.
 //
 // Errors: ErrManifestInvalid, ErrDigestMismatch, ErrManifestBlobUnknown.
-func (s *RepositoryService) PutManifest(repoName, reference, mediaType string, content []byte) (string, error) {
+func (s *RepositoryService) PutManifest(ctx context.Context, repoName, reference, mediaType string, content []byte) (string, error) {
 	digest := ComputeDigest(content)
 	isDigestRef := oci.IsDigestReference(reference)
 	if isDigestRef && reference != digest {
@@ -212,20 +213,20 @@ func (s *RepositoryService) PutManifest(repoName, reference, mediaType string, c
 	gcLock.RLock()
 	defer gcLock.RUnlock()
 
-	tx, err := s.db.Begin()
+	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return "", err
 	}
 	defer tx.Rollback()
 
-	repo, err := ensureRepository(tx, repoName)
+	repo, err := ensureRepository(ctx, tx, repoName)
 	if err != nil {
 		return "", err
 	}
 
 	for _, d := range refs.Blobs {
 		var one int
-		err := tx.QueryRow(`SELECT 1 FROM blobs WHERE digest = ?`, d).Scan(&one)
+		err := tx.QueryRowContext(ctx, `SELECT 1 FROM blobs WHERE digest = ?`, d).Scan(&one)
 		if errors.Is(err, sql.ErrNoRows) {
 			return "", fmt.Errorf("%w: %s", ErrManifestBlobUnknown, d)
 		} else if err != nil {
@@ -234,7 +235,7 @@ func (s *RepositoryService) PutManifest(repoName, reference, mediaType string, c
 	}
 	for _, d := range refs.Manifests {
 		var one int
-		err := tx.QueryRow(`SELECT 1 FROM manifests WHERE repository_id = ? AND digest = ?`, repo.ID, d).Scan(&one)
+		err := tx.QueryRowContext(ctx, `SELECT 1 FROM manifests WHERE repository_id = ? AND digest = ?`, repo.ID, d).Scan(&one)
 		if errors.Is(err, sql.ErrNoRows) {
 			return "", fmt.Errorf("%w: manifest %s", ErrManifestBlobUnknown, d)
 		} else if err != nil {
@@ -242,11 +243,11 @@ func (s *RepositoryService) PutManifest(repoName, reference, mediaType string, c
 		}
 	}
 
-	if err := upsertManifest(tx, repo.ID, digest, mediaType, content); err != nil {
+	if err := upsertManifest(ctx, tx, repo.ID, digest, mediaType, content); err != nil {
 		return "", err
 	}
 	if !isDigestRef {
-		if err := upsertTag(tx, repo.ID, reference, digest); err != nil {
+		if err := upsertTag(ctx, tx, repo.ID, reference, digest); err != nil {
 			return "", err
 		}
 	}
@@ -255,16 +256,16 @@ func (s *RepositoryService) PutManifest(repoName, reference, mediaType string, c
 
 // SaveManifest stores a manifest without reference validation. Prefer
 // PutManifest for client-facing writes.
-func (s *RepositoryService) SaveManifest(repoName, digest, mediaType string, content []byte) error {
-	repo, err := s.EnsureRepository(repoName)
+func (s *RepositoryService) SaveManifest(ctx context.Context, repoName, digest, mediaType string, content []byte) error {
+	repo, err := s.EnsureRepository(ctx, repoName)
 	if err != nil {
 		return err
 	}
-	return upsertManifest(s.db, repo.ID, digest, mediaType, content)
+	return upsertManifest(ctx, s.db, repo.ID, digest, mediaType, content)
 }
 
-func upsertManifest(q queryer, repoID int64, digest, mediaType string, content []byte) error {
-	_, err := q.Exec(`
+func upsertManifest(ctx context.Context, q queryer, repoID int64, digest, mediaType string, content []byte) error {
+	_, err := q.ExecContext(ctx, `
 		INSERT INTO manifests (repository_id, digest, media_type, content, size)
 		VALUES (?, ?, ?, ?, ?)
 		ON CONFLICT(repository_id, digest) DO UPDATE SET media_type = excluded.media_type`,
@@ -272,20 +273,20 @@ func upsertManifest(q queryer, repoID int64, digest, mediaType string, content [
 	return err
 }
 
-func (s *RepositoryService) GetManifest(repoName, reference string) (*model.Manifest, error) {
-	repo, err := s.GetRepository(repoName)
+func (s *RepositoryService) GetManifest(ctx context.Context, repoName, reference string) (*model.Manifest, error) {
+	repo, err := s.GetRepository(ctx, repoName)
 	if err != nil {
 		return nil, err
 	}
 
 	var row *sql.Row
 	if oci.IsDigestReference(reference) {
-		row = s.db.QueryRow(`
+		row = s.db.QueryRowContext(ctx, `
 			SELECT digest, repository_id, media_type, content, size, created_at
 			FROM manifests WHERE repository_id = ? AND digest = ?`,
 			repo.ID, reference)
 	} else {
-		row = s.db.QueryRow(`
+		row = s.db.QueryRowContext(ctx, `
 			SELECT m.digest, m.repository_id, m.media_type, m.content, m.size, m.created_at
 			FROM tags t
 			JOIN manifests m ON m.repository_id = t.repository_id AND m.digest = t.manifest_digest
@@ -305,12 +306,12 @@ func (s *RepositoryService) GetManifest(repoName, reference string) (*model.Mani
 
 // DeleteManifest removes a manifest from a repository; tags pointing at it are
 // removed by ON DELETE CASCADE.
-func (s *RepositoryService) DeleteManifest(repoName, digest string) error {
-	repo, err := s.GetRepository(repoName)
+func (s *RepositoryService) DeleteManifest(ctx context.Context, repoName, digest string) error {
+	repo, err := s.GetRepository(ctx, repoName)
 	if err != nil {
 		return err
 	}
-	res, err := s.db.Exec(`DELETE FROM manifests WHERE repository_id = ? AND digest = ?`, repo.ID, digest)
+	res, err := s.db.ExecContext(ctx, `DELETE FROM manifests WHERE repository_id = ? AND digest = ?`, repo.ID, digest)
 	if err != nil {
 		return err
 	}
@@ -320,22 +321,22 @@ func (s *RepositoryService) DeleteManifest(repoName, digest string) error {
 	return nil
 }
 
-func (s *RepositoryService) AllManifestDigests() ([]string, error) {
-	return s.queryStrings(`SELECT DISTINCT digest FROM manifests`)
+func (s *RepositoryService) AllManifestDigests(ctx context.Context) ([]string, error) {
+	return s.queryStrings(ctx, `SELECT DISTINCT digest FROM manifests`)
 }
 
 // --- Tags ---
 
-func (s *RepositoryService) SaveTag(repoName, tag, manifestDigest string) error {
-	repo, err := s.EnsureRepository(repoName)
+func (s *RepositoryService) SaveTag(ctx context.Context, repoName, tag, manifestDigest string) error {
+	repo, err := s.EnsureRepository(ctx, repoName)
 	if err != nil {
 		return err
 	}
-	return upsertTag(s.db, repo.ID, tag, manifestDigest)
+	return upsertTag(ctx, s.db, repo.ID, tag, manifestDigest)
 }
 
-func upsertTag(q queryer, repoID int64, tag, digest string) error {
-	_, err := q.Exec(`
+func upsertTag(ctx context.Context, q queryer, repoID int64, tag, digest string) error {
+	_, err := q.ExecContext(ctx, `
 		INSERT INTO tags (repository_id, tag, manifest_digest)
 		VALUES (?, ?, ?)
 		ON CONFLICT(repository_id, tag) DO UPDATE SET
@@ -345,12 +346,12 @@ func upsertTag(q queryer, repoID int64, tag, digest string) error {
 	return err
 }
 
-func (s *RepositoryService) ListTags(repoName string) ([]*model.Tag, error) {
-	repo, err := s.GetRepository(repoName)
+func (s *RepositoryService) ListTags(ctx context.Context, repoName string) ([]*model.Tag, error) {
+	repo, err := s.GetRepository(ctx, repoName)
 	if err != nil {
 		return nil, err
 	}
-	rows, err := s.db.Query(`
+	rows, err := s.db.QueryContext(ctx, `
 		SELECT repository_id, tag, manifest_digest, updated_at
 		FROM tags WHERE repository_id = ? ORDER BY tag`, repo.ID)
 	if err != nil {
@@ -369,12 +370,12 @@ func (s *RepositoryService) ListTags(repoName string) ([]*model.Tag, error) {
 	return tags, rows.Err()
 }
 
-func (s *RepositoryService) DeleteTag(repoName, tag string) error {
-	repo, err := s.GetRepository(repoName)
+func (s *RepositoryService) DeleteTag(ctx context.Context, repoName, tag string) error {
+	repo, err := s.GetRepository(ctx, repoName)
 	if err != nil {
 		return err
 	}
-	res, err := s.db.Exec(`DELETE FROM tags WHERE repository_id = ? AND tag = ?`, repo.ID, tag)
+	res, err := s.db.ExecContext(ctx, `DELETE FROM tags WHERE repository_id = ? AND tag = ?`, repo.ID, tag)
 	if err != nil {
 		return err
 	}
@@ -386,15 +387,15 @@ func (s *RepositoryService) DeleteTag(repoName, tag string) error {
 
 // --- Uploads ---
 
-func (s *RepositoryService) SaveUpload(id, tempPath string, repoID, offset int64) error {
-	_, err := s.db.Exec(
+func (s *RepositoryService) SaveUpload(ctx context.Context, id, tempPath string, repoID, offset int64) error {
+	_, err := s.db.ExecContext(ctx,
 		`INSERT OR REPLACE INTO uploads (id, repository_id, offset, temp_path) VALUES (?, ?, ?, ?)`,
 		id, repoID, offset, tempPath)
 	return err
 }
 
-func (s *RepositoryService) GetUpload(id string) (*model.Upload, error) {
-	row := s.db.QueryRow(
+func (s *RepositoryService) GetUpload(ctx context.Context, id string) (*model.Upload, error) {
+	row := s.db.QueryRowContext(ctx,
 		`SELECT id, repository_id, offset, temp_path, created_at FROM uploads WHERE id = ?`, id)
 	var u model.Upload
 	if err := row.Scan(&u.ID, &u.RepositoryID, &u.Offset, &u.TempPath, &u.CreatedAt); err != nil {
@@ -407,8 +408,8 @@ func (s *RepositoryService) GetUpload(id string) (*model.Upload, error) {
 }
 
 // GetRepoUpload returns an upload session only if it belongs to repoName.
-func (s *RepositoryService) GetRepoUpload(repoName, id string) (*model.Upload, error) {
-	row := s.db.QueryRow(`
+func (s *RepositoryService) GetRepoUpload(ctx context.Context, repoName, id string) (*model.Upload, error) {
+	row := s.db.QueryRowContext(ctx, `
 		SELECT u.id, u.repository_id, u.offset, u.temp_path, u.created_at
 		FROM uploads u JOIN repositories r ON r.id = u.repository_id
 		WHERE u.id = ? AND r.name = ?`, id, repoName)
@@ -422,26 +423,26 @@ func (s *RepositoryService) GetRepoUpload(repoName, id string) (*model.Upload, e
 	return &u, nil
 }
 
-func (s *RepositoryService) UpdateUploadOffset(id string, offset int64) error {
-	_, err := s.db.Exec(`UPDATE uploads SET offset = ? WHERE id = ?`, offset, id)
+func (s *RepositoryService) UpdateUploadOffset(ctx context.Context, id string, offset int64) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE uploads SET offset = ? WHERE id = ?`, offset, id)
 	return err
 }
 
-func (s *RepositoryService) DeleteUpload(id string) error {
-	_, err := s.db.Exec(`DELETE FROM uploads WHERE id = ?`, id)
+func (s *RepositoryService) DeleteUpload(ctx context.Context, id string) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM uploads WHERE id = ?`, id)
 	return err
 }
 
 // UploadIDsCreatedBefore returns IDs of upload sessions started before t.
-func (s *RepositoryService) UploadIDsCreatedBefore(t time.Time) ([]string, error) {
-	return s.queryStrings(`SELECT id FROM uploads WHERE created_at < ?`, t.UTC().Format(sqliteTime))
+func (s *RepositoryService) UploadIDsCreatedBefore(ctx context.Context, t time.Time) ([]string, error) {
+	return s.queryStrings(ctx, `SELECT id FROM uploads WHERE created_at < ?`, t.UTC().Format(sqliteTime))
 }
 
 // --- GC ---
 
 // ReferencedBlobDigests returns all blobs referenced by any stored manifest.
-func (s *RepositoryService) ReferencedBlobDigests() (map[string]bool, error) {
-	rows, err := s.db.Query(`SELECT content FROM manifests`)
+func (s *RepositoryService) ReferencedBlobDigests(ctx context.Context) (map[string]bool, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT content FROM manifests`)
 	if err != nil {
 		return nil, err
 	}
@@ -458,8 +459,8 @@ func (s *RepositoryService) ReferencedBlobDigests() (map[string]bool, error) {
 	return referenced, rows.Err()
 }
 
-func (s *RepositoryService) queryStrings(query string, args ...any) ([]string, error) {
-	rows, err := s.db.Query(query, args...)
+func (s *RepositoryService) queryStrings(ctx context.Context, query string, args ...any) ([]string, error) {
+	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}

@@ -13,6 +13,7 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -21,6 +22,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/signal"
 	"strings"
 	"time"
 )
@@ -29,15 +31,23 @@ var (
 	registryURL = envOr("FOUNDRY_URL", "http://localhost:8080")
 	username    = os.Getenv("FOUNDRY_USER")
 	password    = os.Getenv("FOUNDRY_PASSWORD")
-	client      = &http.Client{Timeout: 30 * time.Second}
+	client      = &http.Client{}
 )
+
+// defaultTimeout bounds each request unless -timeout is given. gc is exempt
+// because a collection can legitimately run longer, and the server aborts a
+// GC whose client gave up.
+const defaultTimeout = 30 * time.Second
 
 func main() {
 	flag.StringVar(&registryURL, "registry", registryURL, "registry base URL")
 	flag.StringVar(&username, "user", username, "username for registries with authentication")
 	passwordStdin := flag.Bool("password-stdin", false, "read the password from stdin")
+	timeout := flag.Duration("timeout", defaultTimeout, "per-request timeout, 0 for none (gc has none unless set)")
 	flag.Usage = usage
 	flag.Parse()
+	timeoutSet := false
+	flag.Visit(func(f *flag.Flag) { timeoutSet = timeoutSet || f.Name == "timeout" })
 	registryURL = strings.TrimRight(registryURL, "/")
 	if *passwordStdin {
 		p, err := readPassword(os.Stdin)
@@ -53,46 +63,64 @@ func main() {
 		os.Exit(1)
 	}
 
-	var err error
-	switch args[0] {
-	case "repos":
-		err = cmdRepos()
-	case "tags":
-		if len(args) < 2 {
-			fatalf("usage: regctl tags <repo>\n")
-		}
-		err = cmdTags(args[1])
-	case "inspect":
-		if len(args) < 2 {
-			fatalf("usage: regctl inspect <repo>:<tag> | <repo>@<digest>\n")
-		}
-		err = cmdInspect(args[1])
-	case "delete":
-		if len(args) < 2 {
-			fatalf("usage: regctl delete <repo>:<tag> | <repo>@<digest>\n")
-		}
-		err = cmdDelete(args[1])
-	case "gc":
-		err = cmdGC(args[1:])
-	default:
-		fmt.Fprintf(os.Stderr, "unknown command: %s\n", args[0])
-		usage()
-		os.Exit(1)
-	}
+	client.Timeout = requestTimeout(args[0], *timeout, timeoutSet)
 
+	// Ctrl-C cancels the in-flight request (and with it any server-side GC).
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	err := runCommand(ctx, args)
+	stop()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}
 }
 
-func cmdRepos() error {
+// requestTimeout returns the HTTP client timeout for command: the -timeout
+// value, except that gc has no timeout unless -timeout was set explicitly.
+func requestTimeout(command string, timeout time.Duration, explicit bool) time.Duration {
+	if command == "gc" && !explicit {
+		return 0
+	}
+	return timeout
+}
+
+func runCommand(ctx context.Context, args []string) error {
+	var err error
+	switch args[0] {
+	case "repos":
+		err = cmdRepos(ctx)
+	case "tags":
+		if len(args) < 2 {
+			fatalf("usage: regctl tags <repo>\n")
+		}
+		err = cmdTags(ctx, args[1])
+	case "inspect":
+		if len(args) < 2 {
+			fatalf("usage: regctl inspect <repo>:<tag> | <repo>@<digest>\n")
+		}
+		err = cmdInspect(ctx, args[1])
+	case "delete":
+		if len(args) < 2 {
+			fatalf("usage: regctl delete <repo>:<tag> | <repo>@<digest>\n")
+		}
+		err = cmdDelete(ctx, args[1])
+	case "gc":
+		err = cmdGC(ctx, args[1:])
+	default:
+		fmt.Fprintf(os.Stderr, "unknown command: %s\n", args[0])
+		usage()
+		os.Exit(1)
+	}
+	return err
+}
+
+func cmdRepos(ctx context.Context) error {
 	var repos []struct {
 		ID        int64     `json:"id"`
 		Name      string    `json:"name"`
 		CreatedAt time.Time `json:"created_at"`
 	}
-	if err := apiGet("/api/repos", &repos); err != nil {
+	if err := apiGet(ctx, "/api/repos", &repos); err != nil {
 		return err
 	}
 	if len(repos) == 0 {
@@ -107,13 +135,13 @@ func cmdRepos() error {
 	return nil
 }
 
-func cmdTags(repo string) error {
+func cmdTags(ctx context.Context, repo string) error {
 	var tags []struct {
 		Tag            string    `json:"tag"`
 		ManifestDigest string    `json:"manifest_digest"`
 		UpdatedAt      time.Time `json:"updated_at"`
 	}
-	if err := apiGet("/api/repos/"+repo+"/tags", &tags); err != nil {
+	if err := apiGet(ctx, "/api/repos/"+repo+"/tags", &tags); err != nil {
 		return err
 	}
 	if len(tags) == 0 {
@@ -128,14 +156,14 @@ func cmdTags(repo string) error {
 	return nil
 }
 
-func cmdInspect(ref string) error {
+func cmdInspect(ctx context.Context, ref string) error {
 	repo, reference, _, err := splitRef(ref)
 	if err != nil {
 		return err
 	}
 
 	var m map[string]json.RawMessage
-	if err := apiGet("/api/repos/"+repo+"/manifests/"+url.PathEscape(reference), &m); err != nil {
+	if err := apiGet(ctx, "/api/repos/"+repo+"/manifests/"+url.PathEscape(reference), &m); err != nil {
 		return err
 	}
 
@@ -144,7 +172,7 @@ func cmdInspect(ref string) error {
 	return enc.Encode(m)
 }
 
-func cmdDelete(ref string) error {
+func cmdDelete(ctx context.Context, ref string) error {
 	repo, reference, isDigest, err := splitRef(ref)
 	if err != nil {
 		return err
@@ -153,14 +181,14 @@ func cmdDelete(ref string) error {
 	if isDigest {
 		path = "/api/manifests/" + repo + "/" + url.PathEscape(reference)
 	}
-	if err := apiDo(http.MethodDelete, path, nil); err != nil {
+	if err := apiDo(ctx, http.MethodDelete, path, nil); err != nil {
 		return err
 	}
 	fmt.Printf("Deleted %s\n", ref)
 	return nil
 }
 
-func cmdGC(args []string) error {
+func cmdGC(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("gc", flag.ExitOnError)
 	dryRun := fs.Bool("dry-run", false, "report what would be deleted without deleting")
 	_ = fs.Parse(args) // ExitOnError: never returns an error
@@ -177,7 +205,7 @@ func cmdGC(args []string) error {
 	if *dryRun {
 		path += "?dry_run=true"
 	}
-	if err := apiDo(http.MethodPost, path, &result); err != nil {
+	if err := apiDo(ctx, http.MethodPost, path, &result); err != nil {
 		return err
 	}
 	if result.DryRun {
@@ -203,14 +231,14 @@ func cmdGC(args []string) error {
 // helpers
 // --------------------------------------------------------------------------
 
-func apiGet(path string, out any) error {
-	return apiDo(http.MethodGet, path, out)
+func apiGet(ctx context.Context, path string, out any) error {
+	return apiDo(ctx, http.MethodGet, path, out)
 }
 
 // apiDo performs a request against the admin API and decodes a JSON response
 // into out (if non-nil). Non-2xx responses are returned as errors.
-func apiDo(method, path string, out any) error {
-	req, err := http.NewRequest(method, registryURL+path, nil)
+func apiDo(ctx context.Context, method, path string, out any) error {
+	req, err := http.NewRequestWithContext(ctx, method, registryURL+path, nil)
 	if err != nil {
 		return err
 	}
@@ -311,7 +339,9 @@ Environment:
 Flags (must precede the command):
   -registry <url>    Override registry URL
   -user <name>       Override FOUNDRY_USER
-  -password-stdin    Read the password from stdin instead of FOUNDRY_PASSWORD`)
+  -password-stdin    Read the password from stdin instead of FOUNDRY_PASSWORD
+  -timeout <dur>     Per-request timeout (default 30s, 0 for none). gc has no
+                     timeout unless this is set; Ctrl-C cancels any command`)
 }
 
 func fatalf(format string, args ...any) {

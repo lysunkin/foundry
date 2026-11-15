@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -35,10 +36,10 @@ type BlobInfo struct {
 // BlobStore defines content-addressable blob operations.
 type BlobStore interface {
 	// Put stores r under its sha256 digest. Returns the final digest and size.
-	Put(r io.Reader) (digest string, size int64, err error)
+	Put(ctx context.Context, r io.Reader) (digest string, size int64, err error)
 	// PutVerified is Put, but fails with ErrDigestMismatch (and stores nothing)
 	// unless the content hashes to expected.
-	PutVerified(r io.Reader, expected string) (size int64, err error)
+	PutVerified(ctx context.Context, r io.Reader, expected string) (size int64, err error)
 	// Get opens the blob for reading. Caller must close it.
 	Get(digest string) (io.ReadSeekCloser, int64, error)
 	// Stat returns blob metadata.
@@ -75,20 +76,22 @@ func NewFilesystemBlobStore(dir string) (*FilesystemBlobStore, error) {
 
 // Put streams r to a temp file, computes its sha256, then atomically renames
 // it to the final path. This is safe for concurrent and interrupted writes.
-func (s *FilesystemBlobStore) Put(r io.Reader) (string, int64, error) {
-	return s.put(r, "")
+// The copy stops with ctx.Err() once ctx is done, and nothing is committed.
+func (s *FilesystemBlobStore) Put(ctx context.Context, r io.Reader) (string, int64, error) {
+	return s.put(ctx, r, "")
 }
 
-// PutVerified stores r only if it hashes to expected.
-func (s *FilesystemBlobStore) PutVerified(r io.Reader, expected string) (int64, error) {
+// PutVerified stores r only if it hashes to expected. Cancellation behaves as
+// for Put.
+func (s *FilesystemBlobStore) PutVerified(ctx context.Context, r io.Reader, expected string) (int64, error) {
 	if !oci.ValidDigest(expected) {
 		return 0, ErrInvalidDigest
 	}
-	_, size, err := s.put(r, expected)
+	_, size, err := s.put(ctx, r, expected)
 	return size, err
 }
 
-func (s *FilesystemBlobStore) put(r io.Reader, expected string) (string, int64, error) {
+func (s *FilesystemBlobStore) put(ctx context.Context, r io.Reader, expected string) (string, int64, error) {
 	tmp, err := os.CreateTemp(s.root, "upload-*.tmp")
 	if err != nil {
 		return "", 0, fmt.Errorf("blob tmp: %w", err)
@@ -102,7 +105,7 @@ func (s *FilesystemBlobStore) put(r io.Reader, expected string) (string, int64, 
 	}()
 
 	h := sha256.New()
-	size, err := io.Copy(io.MultiWriter(tmp, h), r)
+	size, err := copyContext(ctx, io.MultiWriter(tmp, h), r)
 	if err != nil {
 		tmp.Close()
 		return "", 0, fmt.Errorf("blob write: %w", err)
@@ -240,11 +243,18 @@ func (s *FilesystemBlobStore) Delete(digest string) error {
 
 // AllDigests returns every stored digest (used by GC). Files that do not look
 // like blobs (temp files, stray files) are ignored.
-func (s *FilesystemBlobStore) AllDigests() ([]string, error) {
+// It returns ctx.Err() if ctx is done before the walk completes.
+func (s *FilesystemBlobStore) AllDigests(ctx context.Context) ([]string, error) {
 	var digests []string
 	err := filepath.WalkDir(s.root, func(path string, d fs.DirEntry, err error) error {
-		if err != nil || d.IsDir() {
+		if err != nil {
 			return err
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if d.IsDir() {
+			return nil
 		}
 		rel, err := filepath.Rel(s.root, path)
 		if err != nil {
@@ -265,8 +275,9 @@ func (s *FilesystemBlobStore) AllDigests() ([]string, error) {
 }
 
 // RemoveStaleTemp deletes temp files older than maxAge left behind by
-// interrupted Put calls. Returns the number of files removed.
-func (s *FilesystemBlobStore) RemoveStaleTemp(maxAge time.Duration) (int, error) {
+// interrupted Put calls. Returns the number of files removed, and ctx.Err()
+// if ctx is done before all entries were examined.
+func (s *FilesystemBlobStore) RemoveStaleTemp(ctx context.Context, maxAge time.Duration) (int, error) {
 	entries, err := os.ReadDir(s.root)
 	if err != nil {
 		return 0, err
@@ -274,6 +285,9 @@ func (s *FilesystemBlobStore) RemoveStaleTemp(maxAge time.Duration) (int, error)
 	cutoff := time.Now().Add(-maxAge)
 	removed := 0
 	for _, e := range entries {
+		if err := ctx.Err(); err != nil {
+			return removed, err
+		}
 		if e.IsDir() || !strings.HasSuffix(e.Name(), ".tmp") {
 			continue
 		}

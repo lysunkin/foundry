@@ -158,6 +158,10 @@ FOUNDRY_USER=alice FOUNDRY_PASSWORD=... regctl gc
 echo "$PASSWORD" | regctl -user alice -password-stdin gc
 ```
 
+Requests time out after 30s (`-timeout <duration>`, `0` for none), except
+`gc`, which waits for the collection unless `-timeout` is given. Ctrl-C
+cancels the request; for `gc` the server then stops collecting.
+
 ## API
 
 ### Docker Registry v2
@@ -214,6 +218,11 @@ references it** and it is older than `-gc-grace`. Notes:
   the repository to release them.
 - Upload sessions older than `-upload-ttl` are removed along with their temp files.
 - Only one GC runs at a time.
+- GC stops when its request is cancelled (client disconnect, client timeout,
+  or server shutdown). Deletions already made stay, and the next run picks up
+  where it stopped. The cancelled request gets 503.
+- On SIGINT/SIGTERM the server waits up to 30s for in-flight requests (such
+  as a long GC), then cancels them. A second signal exits immediately.
 
 ## Architecture
 

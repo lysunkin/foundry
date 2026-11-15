@@ -37,7 +37,7 @@ func TestUploadStore_Append_SingleChunk(t *testing.T) {
 	s.Create("upload1")
 
 	data := []byte("hello world")
-	newOffset, err := s.Append("upload1", 0, bytes.NewReader(data))
+	newOffset, err := s.Append(t.Context(), "upload1", 0, bytes.NewReader(data))
 	if err != nil {
 		t.Fatalf("Append: %v", err)
 	}
@@ -59,9 +59,9 @@ func TestUploadStore_Append_MultipleChunks(t *testing.T) {
 	chunk2 := []byte("BBBB")
 	chunk3 := []byte("CCCC")
 
-	off, _ := s.Append("chunked", 0, bytes.NewReader(chunk1))
-	off, _ = s.Append("chunked", off, bytes.NewReader(chunk2))
-	off, _ = s.Append("chunked", off, bytes.NewReader(chunk3))
+	off, _ := s.Append(t.Context(), "chunked", 0, bytes.NewReader(chunk1))
+	off, _ = s.Append(t.Context(), "chunked", off, bytes.NewReader(chunk2))
+	off, _ = s.Append(t.Context(), "chunked", off, bytes.NewReader(chunk3))
 
 	want := append(append(chunk1, chunk2...), chunk3...)
 	got, _ := os.ReadFile(s.Path("chunked"))
@@ -78,7 +78,7 @@ func TestUploadStore_Append_ReturnedOffsetIsAbsolute(t *testing.T) {
 	s.Create("offtest")
 
 	data := make([]byte, 1024)
-	off, err := s.Append("offtest", 0, bytes.NewReader(data))
+	off, err := s.Append(t.Context(), "offtest", 0, bytes.NewReader(data))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -93,10 +93,10 @@ func TestUploadStore_Append_SeeksToCorrectPosition(t *testing.T) {
 	s.Create("seek")
 
 	// Fill with 8 bytes of 'A'.
-	s.Append("seek", 0, bytes.NewReader(bytes.Repeat([]byte("A"), 8)))
+	s.Append(t.Context(), "seek", 0, bytes.NewReader(bytes.Repeat([]byte("A"), 8)))
 
 	// "Retry" last 4 bytes with 'B'.
-	s.Append("seek", 4, bytes.NewReader(bytes.Repeat([]byte("B"), 4)))
+	s.Append(t.Context(), "seek", 4, bytes.NewReader(bytes.Repeat([]byte("B"), 4)))
 
 	want := append(bytes.Repeat([]byte("A"), 4), bytes.Repeat([]byte("B"), 4)...)
 	got, _ := os.ReadFile(s.Path("seek"))
@@ -121,7 +121,7 @@ func TestUploadStore_Append_EmptyReader(t *testing.T) {
 	s := newUploadStore(t)
 	s.Create("empty")
 
-	off, err := s.Append("empty", 0, bytes.NewReader(nil))
+	off, err := s.Append(t.Context(), "empty", 0, bytes.NewReader(nil))
 	if err != nil {
 		t.Fatalf("Append empty: %v", err)
 	}

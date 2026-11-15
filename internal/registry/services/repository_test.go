@@ -14,7 +14,7 @@ import (
 // and returns a RepositoryService wired to it.
 func newService(t *testing.T) *services.RepositoryService {
 	t.Helper()
-	database, err := db.Open(filepath.Join(t.TempDir(), "test.db"))
+	database, err := db.Open(t.Context(), filepath.Join(t.TempDir(), "test.db"))
 	if err != nil {
 		t.Fatalf("db.Open: %v", err)
 	}
@@ -29,7 +29,7 @@ func newService(t *testing.T) *services.RepositoryService {
 func TestRepository_EnsureAndGet(t *testing.T) {
 	svc := newService(t)
 
-	repo, err := svc.EnsureRepository("myapp")
+	repo, err := svc.EnsureRepository(t.Context(), "myapp")
 	if err != nil {
 		t.Fatalf("EnsureRepository: %v", err)
 	}
@@ -44,8 +44,8 @@ func TestRepository_EnsureAndGet(t *testing.T) {
 func TestRepository_EnsureIdempotent(t *testing.T) {
 	svc := newService(t)
 
-	r1, _ := svc.EnsureRepository("app")
-	r2, err := svc.EnsureRepository("app")
+	r1, _ := svc.EnsureRepository(t.Context(), "app")
+	r2, err := svc.EnsureRepository(t.Context(), "app")
 	if err != nil {
 		t.Fatalf("second EnsureRepository: %v", err)
 	}
@@ -57,7 +57,7 @@ func TestRepository_EnsureIdempotent(t *testing.T) {
 func TestRepository_GetNotFound(t *testing.T) {
 	svc := newService(t)
 
-	_, err := svc.GetRepository("nonexistent")
+	_, err := svc.GetRepository(t.Context(), "nonexistent")
 	if !errors.Is(err, services.ErrNotFound) {
 		t.Errorf("expected ErrNotFound, got %v", err)
 	}
@@ -68,10 +68,10 @@ func TestRepository_List(t *testing.T) {
 
 	names := []string{"zebra", "alpha", "middle"}
 	for _, n := range names {
-		svc.EnsureRepository(n)
+		svc.EnsureRepository(t.Context(), n)
 	}
 
-	repos, err := svc.ListRepositories()
+	repos, err := svc.ListRepositories(t.Context())
 	if err != nil {
 		t.Fatalf("ListRepositories: %v", err)
 	}
@@ -89,7 +89,7 @@ func TestRepository_List(t *testing.T) {
 
 func TestRepository_ListEmpty(t *testing.T) {
 	svc := newService(t)
-	repos, err := svc.ListRepositories()
+	repos, err := svc.ListRepositories(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -102,16 +102,16 @@ func TestRepository_Delete(t *testing.T) {
 	svc := newService(t)
 
 	// Create repo with a manifest and tag.
-	svc.EnsureRepository("todelete")
+	svc.EnsureRepository(t.Context(), "todelete")
 	digest := services.ComputeDigest([]byte(`{"schemaVersion":2}`))
-	svc.SaveManifest("todelete", digest, "application/vnd.oci.image.manifest.v1+json", []byte(`{"schemaVersion":2}`))
-	svc.SaveTag("todelete", "v1", digest)
+	svc.SaveManifest(t.Context(), "todelete", digest, "application/vnd.oci.image.manifest.v1+json", []byte(`{"schemaVersion":2}`))
+	svc.SaveTag(t.Context(), "todelete", "v1", digest)
 
-	if err := svc.DeleteRepository("todelete"); err != nil {
+	if err := svc.DeleteRepository(t.Context(), "todelete"); err != nil {
 		t.Fatalf("DeleteRepository: %v", err)
 	}
 
-	_, err := svc.GetRepository("todelete")
+	_, err := svc.GetRepository(t.Context(), "todelete")
 	if !errors.Is(err, services.ErrNotFound) {
 		t.Errorf("expected ErrNotFound after delete, got %v", err)
 	}
@@ -119,7 +119,7 @@ func TestRepository_Delete(t *testing.T) {
 
 func TestRepository_DeleteNotFound(t *testing.T) {
 	svc := newService(t)
-	err := svc.DeleteRepository("ghost")
+	err := svc.DeleteRepository(t.Context(), "ghost")
 	if !errors.Is(err, services.ErrNotFound) {
 		t.Errorf("expected ErrNotFound, got %v", err)
 	}
@@ -133,11 +133,11 @@ func TestBlob_SaveAndGet(t *testing.T) {
 	svc := newService(t)
 	digest := "sha256:" + strings.Repeat("ab", 32)
 
-	if err := svc.SaveBlob(digest, 1234); err != nil {
+	if err := svc.SaveBlob(t.Context(), digest, 1234); err != nil {
 		t.Fatalf("SaveBlob: %v", err)
 	}
 
-	blob, err := svc.GetBlob(digest)
+	blob, err := svc.GetBlob(t.Context(), digest)
 	if err != nil {
 		t.Fatalf("GetBlob: %v", err)
 	}
@@ -154,15 +154,15 @@ func TestBlob_SaveIdempotent(t *testing.T) {
 	digest := "sha256:" + strings.Repeat("cd", 32)
 
 	// INSERT OR IGNORE — second call must not error.
-	if err := svc.SaveBlob(digest, 100); err != nil {
+	if err := svc.SaveBlob(t.Context(), digest, 100); err != nil {
 		t.Fatalf("first SaveBlob: %v", err)
 	}
-	if err := svc.SaveBlob(digest, 200); err != nil {
+	if err := svc.SaveBlob(t.Context(), digest, 200); err != nil {
 		t.Fatalf("second SaveBlob: %v", err)
 	}
 
 	// Original size is preserved (INSERT OR IGNORE).
-	blob, _ := svc.GetBlob(digest)
+	blob, _ := svc.GetBlob(t.Context(), digest)
 	if blob.Size != 100 {
 		t.Errorf("size after duplicate save = %d, want 100", blob.Size)
 	}
@@ -170,7 +170,7 @@ func TestBlob_SaveIdempotent(t *testing.T) {
 
 func TestBlob_GetNotFound(t *testing.T) {
 	svc := newService(t)
-	_, err := svc.GetBlob("sha256:" + strings.Repeat("00", 32))
+	_, err := svc.GetBlob(t.Context(), "sha256:"+strings.Repeat("00", 32))
 	if !errors.Is(err, services.ErrNotFound) {
 		t.Errorf("expected ErrNotFound, got %v", err)
 	}
@@ -180,12 +180,12 @@ func TestBlob_Exists(t *testing.T) {
 	svc := newService(t)
 	digest := "sha256:" + strings.Repeat("dd", 32)
 
-	ok, _ := svc.BlobExists(digest)
+	ok, _ := svc.BlobExists(t.Context(), digest)
 	if ok {
 		t.Error("should not exist before save")
 	}
-	svc.SaveBlob(digest, 5)
-	ok, _ = svc.BlobExists(digest)
+	svc.SaveBlob(t.Context(), digest, 5)
+	ok, _ = svc.BlobExists(t.Context(), digest)
 	if !ok {
 		t.Error("should exist after save")
 	}
@@ -194,12 +194,12 @@ func TestBlob_Exists(t *testing.T) {
 func TestBlob_Delete(t *testing.T) {
 	svc := newService(t)
 	digest := "sha256:" + strings.Repeat("ee", 32)
-	svc.SaveBlob(digest, 10)
+	svc.SaveBlob(t.Context(), digest, 10)
 
-	if err := svc.DeleteBlob(digest); err != nil {
+	if err := svc.DeleteBlob(t.Context(), digest); err != nil {
 		t.Fatalf("DeleteBlob: %v", err)
 	}
-	ok, _ := svc.BlobExists(digest)
+	ok, _ := svc.BlobExists(t.Context(), digest)
 	if ok {
 		t.Error("blob should not exist after delete")
 	}
@@ -208,10 +208,10 @@ func TestBlob_Delete(t *testing.T) {
 func TestBlob_AllDigests(t *testing.T) {
 	svc := newService(t)
 	for _, d := range []string{"sha256:" + strings.Repeat("11", 32), "sha256:" + strings.Repeat("22", 32)} {
-		svc.SaveBlob(d, 1)
+		svc.SaveBlob(t.Context(), d, 1)
 	}
 
-	all, err := svc.AllBlobDigests()
+	all, err := svc.AllBlobDigests(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -235,11 +235,11 @@ func TestManifest_SaveAndGetByDigest(t *testing.T) {
 	content := testManifestContent()
 	digest := services.ComputeDigest(content)
 
-	if err := svc.SaveManifest("myrepo", digest, testMediaType, content); err != nil {
+	if err := svc.SaveManifest(t.Context(), "myrepo", digest, testMediaType, content); err != nil {
 		t.Fatalf("SaveManifest: %v", err)
 	}
 
-	m, err := svc.GetManifest("myrepo", digest)
+	m, err := svc.GetManifest(t.Context(), "myrepo", digest)
 	if err != nil {
 		t.Fatalf("GetManifest by digest: %v", err)
 	}
@@ -260,11 +260,11 @@ func TestManifest_SaveCreatesRepoAutomatically(t *testing.T) {
 	digest := services.ComputeDigest(content)
 
 	// EnsureRepository is NOT called explicitly — SaveManifest must do it.
-	if err := svc.SaveManifest("newrepo", digest, testMediaType, content); err != nil {
+	if err := svc.SaveManifest(t.Context(), "newrepo", digest, testMediaType, content); err != nil {
 		t.Fatalf("SaveManifest on new repo: %v", err)
 	}
 
-	repo, err := svc.GetRepository("newrepo")
+	repo, err := svc.GetRepository(t.Context(), "newrepo")
 	if err != nil {
 		t.Fatalf("repo not created: %v", err)
 	}
@@ -278,10 +278,10 @@ func TestManifest_GetByTag(t *testing.T) {
 	content := testManifestContent()
 	digest := services.ComputeDigest(content)
 
-	svc.SaveManifest("tagrepo", digest, testMediaType, content)
-	svc.SaveTag("tagrepo", "latest", digest)
+	svc.SaveManifest(t.Context(), "tagrepo", digest, testMediaType, content)
+	svc.SaveTag(t.Context(), "tagrepo", "latest", digest)
 
-	m, err := svc.GetManifest("tagrepo", "latest")
+	m, err := svc.GetManifest(t.Context(), "tagrepo", "latest")
 	if err != nil {
 		t.Fatalf("GetManifest by tag: %v", err)
 	}
@@ -292,14 +292,14 @@ func TestManifest_GetByTag(t *testing.T) {
 
 func TestManifest_GetNotFound(t *testing.T) {
 	svc := newService(t)
-	svc.EnsureRepository("empty")
+	svc.EnsureRepository(t.Context(), "empty")
 
-	_, err := svc.GetManifest("empty", "sha256:"+strings.Repeat("00", 32))
+	_, err := svc.GetManifest(t.Context(), "empty", "sha256:"+strings.Repeat("00", 32))
 	if !errors.Is(err, services.ErrNotFound) {
 		t.Errorf("expected ErrNotFound by digest, got %v", err)
 	}
 
-	_, err = svc.GetManifest("empty", "nonexistent-tag")
+	_, err = svc.GetManifest(t.Context(), "empty", "nonexistent-tag")
 	if !errors.Is(err, services.ErrNotFound) {
 		t.Errorf("expected ErrNotFound by tag, got %v", err)
 	}
@@ -307,7 +307,7 @@ func TestManifest_GetNotFound(t *testing.T) {
 
 func TestManifest_GetRepoNotFound(t *testing.T) {
 	svc := newService(t)
-	_, err := svc.GetManifest("ghost", "latest")
+	_, err := svc.GetManifest(t.Context(), "ghost", "latest")
 	if !errors.Is(err, services.ErrNotFound) {
 		t.Errorf("expected ErrNotFound for missing repo, got %v", err)
 	}
@@ -318,19 +318,19 @@ func TestManifest_Delete(t *testing.T) {
 	content := testManifestContent()
 	digest := services.ComputeDigest(content)
 
-	svc.SaveManifest("repo", digest, testMediaType, content)
-	svc.SaveTag("repo", "v1", digest)
+	svc.SaveManifest(t.Context(), "repo", digest, testMediaType, content)
+	svc.SaveTag(t.Context(), "repo", "v1", digest)
 
-	if err := svc.DeleteManifest("repo", digest); err != nil {
+	if err := svc.DeleteManifest(t.Context(), "repo", digest); err != nil {
 		t.Fatalf("DeleteManifest: %v", err)
 	}
 
-	_, err := svc.GetManifest("repo", digest)
+	_, err := svc.GetManifest(t.Context(), "repo", digest)
 	if !errors.Is(err, services.ErrNotFound) {
 		t.Errorf("manifest should be gone, got %v", err)
 	}
 	// Tag should also be gone.
-	tags, _ := svc.ListTags("repo")
+	tags, _ := svc.ListTags(t.Context(), "repo")
 	if len(tags) != 0 {
 		t.Errorf("tags should be gone after manifest delete, got %d", len(tags))
 	}
@@ -343,10 +343,10 @@ func TestManifest_Overwrite(t *testing.T) {
 	d1 := services.ComputeDigest(content1)
 	d2 := services.ComputeDigest(content2)
 
-	svc.SaveManifest("repo", d1, testMediaType, content1)
-	svc.SaveManifest("repo", d2, testMediaType, content2)
+	svc.SaveManifest(t.Context(), "repo", d1, testMediaType, content1)
+	svc.SaveManifest(t.Context(), "repo", d2, testMediaType, content2)
 
-	digests, _ := svc.AllManifestDigests()
+	digests, _ := svc.AllManifestDigests(t.Context())
 	if len(digests) != 2 {
 		t.Errorf("expected 2 manifests, got %d", len(digests))
 	}
@@ -360,15 +360,15 @@ func TestTag_SaveAndList(t *testing.T) {
 	svc := newService(t)
 	content := testManifestContent()
 	digest := services.ComputeDigest(content)
-	svc.SaveManifest("repo", digest, testMediaType, content)
+	svc.SaveManifest(t.Context(), "repo", digest, testMediaType, content)
 
 	for _, tag := range []string{"v2", "latest", "v1"} {
-		if err := svc.SaveTag("repo", tag, digest); err != nil {
+		if err := svc.SaveTag(t.Context(), "repo", tag, digest); err != nil {
 			t.Fatalf("SaveTag %s: %v", tag, err)
 		}
 	}
 
-	tags, err := svc.ListTags("repo")
+	tags, err := svc.ListTags(t.Context(), "repo")
 	if err != nil {
 		t.Fatalf("ListTags: %v", err)
 	}
@@ -393,13 +393,13 @@ func TestTag_Upsert(t *testing.T) {
 	c2 := []byte(`{"v":2}`)
 	d1 := services.ComputeDigest(c1)
 	d2 := services.ComputeDigest(c2)
-	svc.SaveManifest("repo", d1, testMediaType, c1)
-	svc.SaveManifest("repo", d2, testMediaType, c2)
+	svc.SaveManifest(t.Context(), "repo", d1, testMediaType, c1)
+	svc.SaveManifest(t.Context(), "repo", d2, testMediaType, c2)
 
-	svc.SaveTag("repo", "latest", d1)
-	svc.SaveTag("repo", "latest", d2) // upsert
+	svc.SaveTag(t.Context(), "repo", "latest", d1)
+	svc.SaveTag(t.Context(), "repo", "latest", d2) // upsert
 
-	tags, _ := svc.ListTags("repo")
+	tags, _ := svc.ListTags(t.Context(), "repo")
 	if len(tags) != 1 {
 		t.Fatalf("expected 1 tag, got %d", len(tags))
 	}
@@ -410,7 +410,7 @@ func TestTag_Upsert(t *testing.T) {
 
 func TestTag_ListRepoNotFound(t *testing.T) {
 	svc := newService(t)
-	_, err := svc.ListTags("ghost")
+	_, err := svc.ListTags(t.Context(), "ghost")
 	if !errors.Is(err, services.ErrNotFound) {
 		t.Errorf("expected ErrNotFound, got %v", err)
 	}
@@ -420,14 +420,14 @@ func TestTag_Delete(t *testing.T) {
 	svc := newService(t)
 	content := testManifestContent()
 	digest := services.ComputeDigest(content)
-	svc.SaveManifest("repo", digest, testMediaType, content)
-	svc.SaveTag("repo", "v1", digest)
+	svc.SaveManifest(t.Context(), "repo", digest, testMediaType, content)
+	svc.SaveTag(t.Context(), "repo", "v1", digest)
 
-	if err := svc.DeleteTag("repo", "v1"); err != nil {
+	if err := svc.DeleteTag(t.Context(), "repo", "v1"); err != nil {
 		t.Fatalf("DeleteTag: %v", err)
 	}
 
-	tags, _ := svc.ListTags("repo")
+	tags, _ := svc.ListTags(t.Context(), "repo")
 	if len(tags) != 0 {
 		t.Errorf("expected 0 tags after delete, got %d", len(tags))
 	}
@@ -435,9 +435,9 @@ func TestTag_Delete(t *testing.T) {
 
 func TestTag_DeleteNotFound(t *testing.T) {
 	svc := newService(t)
-	svc.EnsureRepository("repo")
+	svc.EnsureRepository(t.Context(), "repo")
 
-	err := svc.DeleteTag("repo", "ghost")
+	err := svc.DeleteTag(t.Context(), "repo", "ghost")
 	if !errors.Is(err, services.ErrNotFound) {
 		t.Errorf("expected ErrNotFound, got %v", err)
 	}
@@ -449,13 +449,13 @@ func TestTag_DeleteNotFound(t *testing.T) {
 
 func TestUpload_SaveAndGet(t *testing.T) {
 	svc := newService(t)
-	repo, _ := svc.EnsureRepository("repo")
+	repo, _ := svc.EnsureRepository(t.Context(), "repo")
 
-	if err := svc.SaveUpload("uuid-1", "/tmp/upload-uuid-1.upload", repo.ID, 0); err != nil {
+	if err := svc.SaveUpload(t.Context(), "uuid-1", "/tmp/upload-uuid-1.upload", repo.ID, 0); err != nil {
 		t.Fatalf("SaveUpload: %v", err)
 	}
 
-	u, err := svc.GetUpload("uuid-1")
+	u, err := svc.GetUpload(t.Context(), "uuid-1")
 	if err != nil {
 		t.Fatalf("GetUpload: %v", err)
 	}
@@ -472,14 +472,14 @@ func TestUpload_SaveAndGet(t *testing.T) {
 
 func TestUpload_UpdateOffset(t *testing.T) {
 	svc := newService(t)
-	repo, _ := svc.EnsureRepository("repo")
-	svc.SaveUpload("uid", "/tmp/uid.upload", repo.ID, 0)
+	repo, _ := svc.EnsureRepository(t.Context(), "repo")
+	svc.SaveUpload(t.Context(), "uid", "/tmp/uid.upload", repo.ID, 0)
 
-	if err := svc.UpdateUploadOffset("uid", 4096); err != nil {
+	if err := svc.UpdateUploadOffset(t.Context(), "uid", 4096); err != nil {
 		t.Fatalf("UpdateUploadOffset: %v", err)
 	}
 
-	u, _ := svc.GetUpload("uid")
+	u, _ := svc.GetUpload(t.Context(), "uid")
 	if u.Offset != 4096 {
 		t.Errorf("Offset = %d, want 4096", u.Offset)
 	}
@@ -487,7 +487,7 @@ func TestUpload_UpdateOffset(t *testing.T) {
 
 func TestUpload_GetNotFound(t *testing.T) {
 	svc := newService(t)
-	_, err := svc.GetUpload("no-such-id")
+	_, err := svc.GetUpload(t.Context(), "no-such-id")
 	if !errors.Is(err, services.ErrNotFound) {
 		t.Errorf("expected ErrNotFound, got %v", err)
 	}
@@ -495,14 +495,14 @@ func TestUpload_GetNotFound(t *testing.T) {
 
 func TestUpload_Delete(t *testing.T) {
 	svc := newService(t)
-	repo, _ := svc.EnsureRepository("repo")
-	svc.SaveUpload("del-uid", "/tmp/del.upload", repo.ID, 0)
+	repo, _ := svc.EnsureRepository(t.Context(), "repo")
+	svc.SaveUpload(t.Context(), "del-uid", "/tmp/del.upload", repo.ID, 0)
 
-	if err := svc.DeleteUpload("del-uid"); err != nil {
+	if err := svc.DeleteUpload(t.Context(), "del-uid"); err != nil {
 		t.Fatalf("DeleteUpload: %v", err)
 	}
 
-	_, err := svc.GetUpload("del-uid")
+	_, err := svc.GetUpload(t.Context(), "del-uid")
 	if !errors.Is(err, services.ErrNotFound) {
 		t.Errorf("expected ErrNotFound after delete, got %v", err)
 	}
@@ -525,9 +525,9 @@ func TestReferencedBlobDigests(t *testing.T) {
 		]
 	}`)
 	digest := services.ComputeDigest(manifest)
-	svc.SaveManifest("repo", digest, testMediaType, manifest)
+	svc.SaveManifest(t.Context(), "repo", digest, testMediaType, manifest)
 
-	referenced, err := svc.ReferencedBlobDigests()
+	referenced, err := svc.ReferencedBlobDigests(t.Context())
 	if err != nil {
 		t.Fatalf("ReferencedBlobDigests: %v", err)
 	}

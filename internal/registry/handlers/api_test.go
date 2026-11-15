@@ -15,8 +15,8 @@ func seedManifest(t *testing.T, ts *testServer, repo, tag string) (digest string
 	t.Helper()
 	content := []byte(`{"schemaVersion":2,"mediaType":"` + ociManifestMediaType + `","config":{"digest":"sha256:` + strings.Repeat("a", 64) + `"},"layers":[]}`)
 	d := services.ComputeDigest(content)
-	ts.svc.SaveManifest(repo, d, ociManifestMediaType, content)
-	ts.svc.SaveTag(repo, tag, d)
+	ts.svc.SaveManifest(t.Context(), repo, d, ociManifestMediaType, content)
+	ts.svc.SaveTag(t.Context(), repo, tag, d)
 	return d
 }
 
@@ -33,8 +33,8 @@ func TestAPIListRepos_Empty(t *testing.T) {
 
 func TestAPIListRepos(t *testing.T) {
 	ts := newTestServer(t)
-	ts.svc.EnsureRepository("alpha")
-	ts.svc.EnsureRepository("beta")
+	ts.svc.EnsureRepository(t.Context(), "alpha")
+	ts.svc.EnsureRepository(t.Context(), "beta")
 
 	rr := ts.do(t, http.MethodGet, "/api/repos", nil, nil)
 	mustStatus(t, rr, http.StatusOK)
@@ -107,7 +107,7 @@ func TestAPIGetManifest(t *testing.T) {
 
 func TestAPIGetManifest_NotFound(t *testing.T) {
 	ts := newTestServer(t)
-	ts.svc.EnsureRepository("repo")
+	ts.svc.EnsureRepository(t.Context(), "repo")
 
 	rr := ts.do(t, http.MethodGet, "/api/repos/repo/manifests/notexist", nil, nil)
 	mustStatus(t, rr, http.StatusNotFound)
@@ -152,7 +152,7 @@ func TestAPIDeleteTag(t *testing.T) {
 	rr := ts.do(t, http.MethodDelete, "/api/tags/repo/v1", nil, nil)
 	mustStatus(t, rr, http.StatusOK)
 
-	tags, _ := ts.svc.ListTags("repo")
+	tags, _ := ts.svc.ListTags(t.Context(), "repo")
 	if len(tags) != 0 {
 		t.Errorf("expected 0 tags, got %d", len(tags))
 	}
@@ -160,7 +160,7 @@ func TestAPIDeleteTag(t *testing.T) {
 
 func TestAPIDeleteTag_NotFound(t *testing.T) {
 	ts := newTestServer(t)
-	ts.svc.EnsureRepository("repo")
+	ts.svc.EnsureRepository(t.Context(), "repo")
 
 	rr := ts.do(t, http.MethodDelete, "/api/tags/repo/ghost", nil, nil)
 	mustStatus(t, rr, http.StatusNotFound)
@@ -178,7 +178,7 @@ func TestAPIDeleteManifest(t *testing.T) {
 	mustStatus(t, rr, http.StatusOK)
 
 	// Tag should also be gone (cascade).
-	tags, _ := ts.svc.ListTags("repo")
+	tags, _ := ts.svc.ListTags(t.Context(), "repo")
 	if len(tags) != 0 {
 		t.Errorf("expected 0 tags after manifest delete, got %d", len(tags))
 	}
@@ -186,7 +186,7 @@ func TestAPIDeleteManifest(t *testing.T) {
 
 func TestAPIDeleteManifest_NotFound(t *testing.T) {
 	ts := newTestServer(t)
-	ts.svc.EnsureRepository("repo")
+	ts.svc.EnsureRepository(t.Context(), "repo")
 
 	rr := ts.do(t, http.MethodDelete, "/api/manifests/repo/sha256:"+strings.Repeat("0", 64), nil, nil)
 	mustStatus(t, rr, http.StatusNotFound)
@@ -201,7 +201,7 @@ func TestAPIGC(t *testing.T) {
 
 	// Put an orphaned blob (no manifest in DB references it).
 	orphanData := bytes.Repeat([]byte("z"), 256)
-	ts.blobs.Put(bytes.NewReader(orphanData))
+	ts.blobs.Put(t.Context(), bytes.NewReader(orphanData))
 
 	rr := ts.do(t, http.MethodPost, "/api/gc", nil, nil)
 	mustStatus(t, rr, http.StatusOK)

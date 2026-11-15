@@ -57,11 +57,27 @@ func newRegistryServer(t *testing.T) *registryServer {
 // server configuration (e.g. enable authentication) before it starts.
 func newRegistryServerWithConfig(t *testing.T, configure func(*registry.Config)) *registryServer {
 	t.Helper()
+	rs, _ := startRegistryServer(t, configure, false)
+	return rs
+}
+
+// newCancellableRegistryServer serves through registry.Server.HTTPServer, as
+// in production. Calling the returned function cancels every request context,
+// as shutdown does after its drain period.
+func newCancellableRegistryServer(t *testing.T) (*registryServer, context.CancelFunc) {
+	t.Helper()
+	return startRegistryServer(t, nil, true)
+}
+
+// startRegistryServer builds and starts the server. With cancellable set it
+// uses HTTPServer with a base context and returns its cancel function.
+func startRegistryServer(t *testing.T, configure func(*registry.Config), cancellable bool) (*registryServer, context.CancelFunc) {
+	t.Helper()
 
 	dataDir := t.TempDir()
 	dbPath := filepath.Join(dataDir, "registry.db")
 
-	database, err := db.Open(dbPath)
+	database, err := db.Open(t.Context(), dbPath)
 	if err != nil {
 		t.Fatalf("db.Open: %v", err)
 	}
@@ -92,13 +108,24 @@ func newRegistryServerWithConfig(t *testing.T, configure func(*registry.Config))
 		t.Fatalf("registry.New: %v", err)
 	}
 
-	ts := httptest.NewServer(srv)
+	var ts *httptest.Server
+	cancel := context.CancelFunc(func() {})
+	if cancellable {
+		var base context.Context
+		base, cancel = context.WithCancel(context.WithoutCancel(t.Context()))
+		t.Cleanup(cancel)
+		ts = httptest.NewUnstartedServer(srv)
+		ts.Config = srv.HTTPServer(base)
+		ts.Start()
+	} else {
+		ts = httptest.NewServer(srv)
+	}
 	t.Cleanup(ts.Close)
 
 	return &registryServer{
 		Server: ts,
 		client: &http.Client{Timeout: 15 * time.Second},
-	}
+	}, cancel
 }
 
 // url builds an absolute URL for the given path.

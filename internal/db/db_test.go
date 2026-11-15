@@ -25,14 +25,14 @@ func TestMigration002_UpgradesExistingData(t *testing.T) {
 	mustExec(t, old, `INSERT INTO tags (repository_id, tag, manifest_digest) VALUES (1, 'latest', 'sha256:m')`)
 	old.Close()
 
-	d, err := Open(path)
+	d, err := Open(t.Context(), path)
 	if err != nil {
 		t.Fatalf("Open (migrate): %v", err)
 	}
 	defer d.Close()
 
 	var tag string
-	if err := d.QueryRow(`SELECT tag FROM tags WHERE repository_id = 1`).Scan(&tag); err != nil || tag != "latest" {
+	if err := d.QueryRowContext(t.Context(), `SELECT tag FROM tags WHERE repository_id = 1`).Scan(&tag); err != nil || tag != "latest" {
 		t.Fatalf("tag not preserved: %q %v", tag, err)
 	}
 	// Same digest in repo 2 is now allowed.
@@ -40,11 +40,11 @@ func TestMigration002_UpgradesExistingData(t *testing.T) {
 	// Cascades: deleting repo 1 removes its manifest and tag only.
 	mustExec(t, d, `DELETE FROM repositories WHERE id = 1`)
 	var n int
-	d.QueryRow(`SELECT COUNT(*) FROM manifests`).Scan(&n)
+	d.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM manifests`).Scan(&n)
 	if n != 1 {
 		t.Errorf("manifests after cascade = %d, want 1", n)
 	}
-	d.QueryRow(`SELECT COUNT(*) FROM tags`).Scan(&n)
+	d.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM tags`).Scan(&n)
 	if n != 0 {
 		t.Errorf("tags after cascade = %d, want 0", n)
 	}
@@ -52,7 +52,7 @@ func TestMigration002_UpgradesExistingData(t *testing.T) {
 
 func mustExec(t *testing.T, d *sql.DB, q string) {
 	t.Helper()
-	if _, err := d.Exec(q); err != nil {
+	if _, err := d.ExecContext(t.Context(), q); err != nil {
 		t.Fatalf("%s: %v", q, err)
 	}
 }
