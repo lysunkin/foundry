@@ -57,13 +57,21 @@ func newRegistryServer(t *testing.T) *registryServer {
 // server configuration (e.g. enable authentication) before it starts.
 func newRegistryServerWithConfig(t *testing.T, configure func(*registry.Config)) *registryServer {
 	t.Helper()
-	return startRegistryServer(t, configure, nil)
+	rs, _ := startRegistryServer(t, configure, false)
+	return rs
 }
 
-// startRegistryServer builds and starts the server. If base is non-nil the
-// server is configured by registry.Server.HTTPServer(base), as in production,
-// so every request context derives from base.
-func startRegistryServer(t *testing.T, configure func(*registry.Config), base context.Context) *registryServer {
+// newCancellableRegistryServer serves through registry.Server.HTTPServer, as
+// in production. Calling the returned function cancels every request context,
+// as shutdown does after its drain period.
+func newCancellableRegistryServer(t *testing.T) (*registryServer, context.CancelFunc) {
+	t.Helper()
+	return startRegistryServer(t, nil, true)
+}
+
+// startRegistryServer builds and starts the server. With cancellable set it
+// uses HTTPServer with a base context and returns its cancel function.
+func startRegistryServer(t *testing.T, configure func(*registry.Config), cancellable bool) (*registryServer, context.CancelFunc) {
 	t.Helper()
 
 	dataDir := t.TempDir()
@@ -101,19 +109,23 @@ func startRegistryServer(t *testing.T, configure func(*registry.Config), base co
 	}
 
 	var ts *httptest.Server
-	if base == nil {
-		ts = httptest.NewServer(srv)
-	} else {
+	cancel := context.CancelFunc(func() {})
+	if cancellable {
+		var base context.Context
+		base, cancel = context.WithCancel(context.WithoutCancel(t.Context()))
+		t.Cleanup(cancel)
 		ts = httptest.NewUnstartedServer(srv)
 		ts.Config = srv.HTTPServer(base)
 		ts.Start()
+	} else {
+		ts = httptest.NewServer(srv)
 	}
 	t.Cleanup(ts.Close)
 
 	return &registryServer{
 		Server: ts,
 		client: &http.Client{Timeout: 15 * time.Second},
-	}
+	}, cancel
 }
 
 // url builds an absolute URL for the given path.

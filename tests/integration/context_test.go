@@ -1,7 +1,6 @@
 package integration
 
 import (
-	"context"
 	"encoding/json"
 	"net/http"
 	"testing"
@@ -12,8 +11,7 @@ import (
 // period), GC aborts: it deletes nothing and answers 503 rather than 500.
 func TestContext_CancelledBaseAbortsGC(t *testing.T) {
 	// Seed an orphan blob that any GC run would delete.
-	base, cancel := context.WithCancel(t.Context())
-	rs := startRegistryServer(t, nil, base)
+	rs, cancel := newCancellableRegistryServer(t)
 	orphan := pushBlob(t, rs, "ctx/repo", []byte("orphan blob"))
 
 	cancel()

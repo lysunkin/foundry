@@ -82,7 +82,7 @@ func TestRequireAuth(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			h := handlers.RequireAuth(handlers.AuthConfig{Users: users, AnonymousRead: tc.anonRead})(ok)
-			req := httptest.NewRequest(tc.method, tc.path, nil)
+			req := httptest.NewRequestWithContext(t.Context(), tc.method, tc.path, nil)
 			switch tc.creds {
 			case good:
 				req.Header.Set("Authorization", basic("alice", "secret"))
@@ -118,7 +118,7 @@ func TestRequireAuthErrorFormats(t *testing.T) {
 		t.Run(tc.path, func(t *testing.T) {
 			t.Parallel()
 			rr := httptest.NewRecorder()
-			h.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, tc.path, nil))
+			h.ServeHTTP(rr, httptest.NewRequestWithContext(t.Context(), http.MethodGet, tc.path, nil))
 			mustStatus(t, rr, http.StatusUnauthorized)
 			mustHeader(t, rr, "Content-Type", tc.wantCT)
 			if got := strings.TrimSpace(rr.Body.String()); got != tc.wantBody {
@@ -128,7 +128,7 @@ func TestRequireAuthErrorFormats(t *testing.T) {
 	}
 
 	rr := httptest.NewRecorder()
-	h.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/v2/", nil))
+	h.ServeHTTP(rr, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/v2/", nil))
 	mustHeader(t, rr, "Docker-Distribution-Api-Version", "registry/2.0")
 }
 
@@ -139,7 +139,7 @@ func TestRequireAuthDisabled(t *testing.T) {
 	}))
 	for _, m := range []string{http.MethodGet, http.MethodPost, http.MethodDelete} {
 		rr := httptest.NewRecorder()
-		h.ServeHTTP(rr, httptest.NewRequest(m, "/v2/", nil))
+		h.ServeHTTP(rr, httptest.NewRequestWithContext(t.Context(), m, "/v2/", nil))
 		mustStatus(t, rr, http.StatusTeapot)
 	}
 }
@@ -160,7 +160,7 @@ func TestRequireHTMX(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			req := httptest.NewRequest(http.MethodPost, "/ui/gc", nil)
+			req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/ui/gc", nil)
 			if tc.header != "" {
 				req.Header.Set("HX-Request", tc.header)
 			}

@@ -419,10 +419,8 @@ func (h *RegistryHandler) putUpload(w http.ResponseWriter, r *http.Request, name
 	}
 
 	// The session is finished whatever happens next.
-	cleanup := func() { h.discardUpload(r.Context(), id) }
-
 	if err := h.blobs.PutAt(digest, h.uploads.Path(id), offset); err != nil {
-		cleanup()
+		h.discardUpload(r.Context(), id)
 		if errors.Is(err, storage.ErrDigestMismatch) || errors.Is(err, storage.ErrSizeMismatch) {
 			registryError(w, http.StatusBadRequest, oci.ErrCodeDigestInvalid, "uploaded content does not match digest")
 			return
@@ -430,7 +428,7 @@ func (h *RegistryHandler) putUpload(w http.ResponseWriter, r *http.Request, name
 		serverError(w, r, err)
 		return
 	}
-	cleanup()
+	h.discardUpload(r.Context(), id)
 
 	if err := h.repo.SaveBlob(r.Context(), digest, offset); err != nil {
 		serverError(w, r, err)

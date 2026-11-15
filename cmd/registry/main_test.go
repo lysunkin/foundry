@@ -60,7 +60,8 @@ func TestEnvBool(t *testing.T) {
 // a cancellable base, as run() does.
 func startServer(t *testing.T, h http.Handler) (*http.Server, string, context.CancelFunc) {
 	t.Helper()
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	var lc net.ListenConfig
+	ln, err := lc.Listen(t.Context(), "tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}

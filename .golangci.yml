@@ -11,10 +11,12 @@ linters:
   default: standard
   enable:
     - bodyclose     # unclosed HTTP response bodies (regctl, integration tests)
+    - contextcheck  # functions that drop the caller's context
     - errorlint     # use errors.Is/As instead of == on wrapped errors
     - gosec         # security: path traversal, file perms, unbounded reads
     - misspell
     - nilerr        # returning nil when err != nil
+    - noctx         # HTTP requests and DB calls without a context
     - unconvert
     - usestdlibvars # http.MethodGet instead of "GET", etc.
   settings:
