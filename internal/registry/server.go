@@ -59,6 +59,8 @@ func New(
 	gcOpts := services.GCOptions{GracePeriod: cfg.GCGracePeriod, UploadTTL: cfg.UploadTTL}
 
 	r := chi.NewRouter()
+	// Outermost, so it sees the server's own ResponseWriter.
+	r.Use(handlers.AbortReadsOnCancel)
 	r.Use(middleware.RequestID)
 	r.Use(middleware.Logger)
 	r.Use(middleware.Recoverer)
