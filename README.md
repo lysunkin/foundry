@@ -15,11 +15,15 @@ A local Docker/OCI container registry in a single Go binary.
 - Server-rendered web UI with HTMX (no React, no Node.js)
 - Admin JSON API
 - `regctl` companion CLI
+- Optional HTTP Basic authentication (htpasswd, bcrypt) with anonymous pull
+- CSRF protection for the web UI and admin API
 - Graceful shutdown on SIGINT/SIGTERM
 
-> **Security:** there is no authentication or TLS. Anyone who can reach the
-> port can push, pull and **delete**. Run it on a trusted machine or network,
-> or bind to loopback (`-addr 127.0.0.1:8080`).
+> **Security:** authentication is **off by default**, and there is no TLS.
+> Without `-auth-htpasswd`, anyone who can reach the port can push, pull and
+> **delete**. Enable [authentication](#authentication), and bind to loopback
+> (`-addr 127.0.0.1:8080`) or put a TLS-terminating proxy in front when the
+> network is not trusted.
 
 ## Quick Start
 
@@ -41,6 +45,50 @@ settings as Make variables, e.g. `make run ADDR=127.0.0.1:5000 DATA_DIR=/tmp/reg
 | `-data` | `FOUNDRY_DATA` | `./data` | Data directory |
 | `-gc-grace` | | `1h` | GC never deletes unreferenced blobs younger than this (protects in-flight pushes) |
 | `-upload-ttl` | | `24h` | GC expires upload sessions older than this |
+| `-auth-htpasswd` | `FOUNDRY_AUTH_HTPASSWD` | (empty: auth off) | bcrypt htpasswd file; enables authentication |
+| `-auth-anonymous-pull` | `FOUNDRY_AUTH_ANONYMOUS_PULL` | `true` | With auth on, allow unauthenticated pulls and browsing |
+
+### Authentication
+
+Create users with bcrypt hashes (other htpasswd formats are rejected at
+startup), then point the server at the file:
+
+```bash
+htpasswd -cB htpasswd alice          # -c creates the file; omit it to add users
+./foundry-registry -auth-htpasswd ./htpasswd
+docker login localhost:8080
+```
+
+With authentication on:
+
+| Request | Anonymous (default) | `-auth-anonymous-pull=false` |
+|---|---|---|
+| Pull, `_catalog`, tag list (`GET`/`HEAD /v2/...`) | allowed | 401 |
+| Push, delete (`/v2` writes) | 401 | 401 |
+| Admin API and web UI reads | allowed | 401 |
+| Admin API and web UI writes (delete, GC) | 401 | 401 |
+| `GET /v2/` (client probe) | 401 | 401 |
+| `/static/` | allowed | allowed |
+
+- 401 responses carry the standard `WWW-Authenticate: Basic realm="foundry"`
+  challenge (verified with Docker 29 using the containerd image store). In
+  the UI, the browser shows its login prompt when you delete or run GC.
+- Every authenticated user can do everything (no roles, no per-repository
+  permissions yet).
+- Wrong credentials are rejected even where anonymous access is allowed, so
+  `docker login` with a bad password fails. Rejections are logged with the
+  username and client address.
+- Credentials travel in cleartext over plain HTTP. The server logs a warning
+  when auth is enabled on a non-loopback address.
+- The htpasswd file is read at startup; restart to apply changes.
+- Docker clients that use the classic (non-containerd) image store were not
+  verified. If anonymous pull fails for them while auth is on, `docker login`
+  first.
+
+**CSRF:** independent of authentication, state-changing browser requests from
+another site (detected via `Sec-Fetch-Site`/`Origin`) are rejected with 403,
+and `POST /ui/*` requires the `HX-Request` header that htmx sends. Clients
+that are not browsers (docker, regctl, curl) are unaffected.
 
 ## Docker Setup
 
@@ -100,6 +148,15 @@ regctl gc -dry-run                   # Report what GC would delete
 
 Set `FOUNDRY_URL` or use `-registry <url>` to point at a non-default address.
 Global flags must come **before** the command: `regctl -registry http://host:8080 repos`.
+
+If the registry requires authentication, set `FOUNDRY_USER` and
+`FOUNDRY_PASSWORD`, or pass `-user` and pipe the password with
+`-password-stdin`:
+
+```bash
+FOUNDRY_USER=alice FOUNDRY_PASSWORD=... regctl gc
+echo "$PASSWORD" | regctl -user alice -password-stdin gc
+```
 
 ## API
 

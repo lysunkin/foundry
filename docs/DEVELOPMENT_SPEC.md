@@ -27,7 +27,9 @@ post-MVP stretch goals.
 
 **Non-goals (for now)**
 
-- Multi-tenant or internet-facing deployment. There is no authn/authz (see §10, R1).
+- Multi-tenant or internet-facing deployment. Authentication is optional
+  single-role Basic auth (§6.3); there is no per-repository authorization
+  (R10) and no TLS.
 - Horizontal scaling: exactly one process owns a `data/` directory.
 - Pull-through caching / mirroring.
 
@@ -237,15 +239,35 @@ remove orphaned blob temp files older than UploadTTL
 
 ### 6.3 Security posture
 
-- No authentication. The admin API and `/ui/gc` can delete data. The default
-  bind is `:8080` (all interfaces) to keep Docker Desktop working; the README
-  tells users to bind to loopback when appropriate.
+- Authentication (R1) is optional and off unless `-auth-htpasswd` is set.
+  `handlers.RequireAuth` wraps the whole router:
+  - HTTP Basic against a bcrypt-only htpasswd file (`internal/auth`), loaded
+    at startup. Unknown users are compared against a dummy hash of the
+    highest cost in the file, so timing does not reveal usernames.
+  - Reads (`GET`/`HEAD`) are anonymous when `-auth-anonymous-pull` (default
+    `true`); everything else needs valid credentials. `GET /v2/` always
+    challenges unauthenticated requests so clients discover auth and
+    `docker login` verifies the password. `/static/` is public.
+  - Credentials that are present but wrong are rejected (401) even on
+    requests allowed anonymously, and logged with username and remote address.
+  - 401s carry `WWW-Authenticate: Basic realm="foundry"` and use the error
+    format of the API (`/v2`: OCI `UNAUTHORIZED`; `/api`: JSON; else text).
+  - A Docker token server (Bearer challenge) was considered and rejected: a
+    spike showed Docker 29 (containerd image store) handles a plain Basic
+    challenge with anonymous pull and authenticated push. Clients using the
+    classic image store are unverified.
+  - Single role; no per-repository authorization until R10.
+- The default bind is `:8080` (all interfaces) to keep Docker Desktop working;
+  the server warns when auth is enabled on a non-loopback address, because
+  Basic credentials travel in cleartext without TLS.
 - Path traversal is prevented by digest/ID validation inside storage (F2).
 - Stored XSS: manifest bytes are served with their stored media type, so only
   manifest media types are accepted (D8) and `nosniff` is set.
-- CSRF: `POST /api/gc` and `POST /ui/gc` are "simple" cross-origin requests,
-  so a malicious page could trigger GC. DELETE endpoints need a CORS preflight
-  and are not exposed. Impact is low (GC only removes unreferenced data). See R1.
+- CSRF (always on, with or without auth): `http.CrossOriginProtection`
+  rejects unsafe-method requests whose `Sec-Fetch-Site`/`Origin` mark them as
+  cross-site (403). Non-browser clients send neither header and pass.
+  `POST /ui/*` additionally requires `HX-Request: true` (`RequireHTMX`), which
+  a cross-site form cannot set without a CORS preflight.
 - Resource limits: manifest body 4 MiB; `ReadHeaderTimeout` 10s,
   `MaxHeaderBytes` 1 MiB. Blob size is unbounded (see R6).
 
@@ -267,9 +289,14 @@ remove orphaned blob temp files older than UploadTTL
 | `-data` / `FOUNDRY_DATA` | `./data` | State directory |
 | `-gc-grace` | `1h` | GC grace period |
 | `-upload-ttl` | `24h` | Upload session expiry |
+| `-auth-htpasswd` / `FOUNDRY_AUTH_HTPASSWD` | empty (auth off) | bcrypt htpasswd file |
+| `-auth-anonymous-pull` / `FOUNDRY_AUTH_ANONYMOUS_PULL` | `true` | Anonymous reads when auth is on. Invalid env values fail startup |
 | `FOUNDRY_URL` / `regctl -registry` | `http://localhost:8080` | CLI target |
+| `FOUNDRY_USER`, `FOUNDRY_PASSWORD` / `regctl -user`, `-password-stdin` | empty | CLI credentials (Basic auth) |
 
-`registry.Config` zero values **disable** grace/TTL (handy in tests).
+`registry.Config` zero values **disable** grace/TTL (handy in tests). With
+`Users` set, the zero value of `AnonymousPull` (false) requires auth for
+everything; `cmd/registry` defaults the flag to true.
 Production callers must set them explicitly, as `cmd/registry` does.
 
 The server shuts down gracefully on SIGINT/SIGTERM (30s drain).
@@ -343,7 +370,9 @@ violation or wrong results; **M** = robustness or maintainability.
 
 Ordered by priority. Each item lists its acceptance criteria.
 
-**R1 — Authentication (high).** Optional static bearer token or htpasswd
+**R1 — Authentication (high). Done** (November 2026; see §6.3 for the
+implemented design, which uses Basic auth without a token server).
+Original item: optional static bearer token or htpasswd
 basic auth for `/v2` writes and all of `/api` and `/ui` mutations, following the
 Docker token-auth challenge (`WWW-Authenticate`). Also add CSRF protection for
 UI POSTs (SameSite cookie + token, or require a custom header that htmx sends).

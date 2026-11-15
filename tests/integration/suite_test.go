@@ -41,11 +41,21 @@ import (
 type registryServer struct {
 	*httptest.Server
 	client *http.Client
+	// auth, if set, is sent as the Authorization header by do (and therefore
+	// by pushBlob, pushManifest, ...). Copy the struct to vary it per call.
+	auth string
 }
 
 // newRegistryServer starts a real httptest.Server backed by a temp SQLite DB
 // and temp filesystem stores. It is closed automatically via t.Cleanup.
 func newRegistryServer(t *testing.T) *registryServer {
+	t.Helper()
+	return newRegistryServerWithConfig(t, nil)
+}
+
+// newRegistryServerWithConfig is newRegistryServer with a hook to adjust the
+// server configuration (e.g. enable authentication) before it starts.
+func newRegistryServerWithConfig(t *testing.T, configure func(*registry.Config)) *registryServer {
 	t.Helper()
 
 	dataDir := t.TempDir()
@@ -74,6 +84,9 @@ func newRegistryServer(t *testing.T) *registryServer {
 	}
 
 	cfg := registry.Config{Addr: "127.0.0.1:0", DataDir: dataDir, DBPath: dbPath}
+	if configure != nil {
+		configure(&cfg)
+	}
 	srv, err := registry.New(cfg, svc, blobs, ups, tmpls, web.StaticFS)
 	if err != nil {
 		t.Fatalf("registry.New: %v", err)
@@ -99,6 +112,9 @@ func (rs *registryServer) do(t *testing.T, method, path string, body io.Reader, 
 	req, err := http.NewRequestWithContext(context.Background(), method, rs.url(path), body)
 	if err != nil {
 		t.Fatalf("new request %s %s: %v", method, path, err)
+	}
+	if rs.auth != "" {
+		req.Header.Set("Authorization", rs.auth)
 	}
 	for k, v := range headers {
 		req.Header.Set(k, v)

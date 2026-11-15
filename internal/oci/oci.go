@@ -48,6 +48,7 @@ const (
 	ErrCodeNameInvalid         = "NAME_INVALID"
 	ErrCodeNameUnknown         = "NAME_UNKNOWN"
 	ErrCodeSizeInvalid         = "SIZE_INVALID"
+	ErrCodeUnauthorized        = "UNAUTHORIZED"
 	ErrCodeUnsupported         = "UNSUPPORTED"
 	ErrCodeUnknown             = "UNKNOWN"
 )
