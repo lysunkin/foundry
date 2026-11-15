@@ -2,8 +2,10 @@
 package registry
 
 import (
+	"context"
 	"fmt"
 	"io/fs"
+	"net"
 	"net/http"
 	"time"
 
@@ -88,8 +90,12 @@ func (s *Server) Handler() http.Handler {
 // WriteTimeout and ReadTimeout are intentionally unset: blob uploads and
 // downloads can legitimately take minutes. ReadHeaderTimeout guards against
 // slowloris-style connections.
-func (s *Server) HTTPServer() *http.Server {
+//
+// Every request context derives from base, so cancelling base cancels all
+// in-flight requests (used when graceful shutdown times out).
+func (s *Server) HTTPServer(base context.Context) *http.Server {
 	return &http.Server{
+		BaseContext:       func(net.Listener) context.Context { return base },
 		Addr:              s.cfg.Addr,
 		Handler:           s.router,
 		ReadHeaderTimeout: 10 * time.Second,

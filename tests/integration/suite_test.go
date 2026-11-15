@@ -57,6 +57,14 @@ func newRegistryServer(t *testing.T) *registryServer {
 // server configuration (e.g. enable authentication) before it starts.
 func newRegistryServerWithConfig(t *testing.T, configure func(*registry.Config)) *registryServer {
 	t.Helper()
+	return startRegistryServer(t, configure, nil)
+}
+
+// startRegistryServer builds and starts the server. If base is non-nil the
+// server is configured by registry.Server.HTTPServer(base), as in production,
+// so every request context derives from base.
+func startRegistryServer(t *testing.T, configure func(*registry.Config), base context.Context) *registryServer {
+	t.Helper()
 
 	dataDir := t.TempDir()
 	dbPath := filepath.Join(dataDir, "registry.db")
@@ -92,7 +100,14 @@ func newRegistryServerWithConfig(t *testing.T, configure func(*registry.Config))
 		t.Fatalf("registry.New: %v", err)
 	}
 
-	ts := httptest.NewServer(srv)
+	var ts *httptest.Server
+	if base == nil {
+		ts = httptest.NewServer(srv)
+	} else {
+		ts = httptest.NewUnstartedServer(srv)
+		ts.Config = srv.HTTPServer(base)
+		ts.Start()
+	}
 	t.Cleanup(ts.Close)
 
 	return &registryServer{

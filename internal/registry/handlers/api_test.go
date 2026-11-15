@@ -201,7 +201,7 @@ func TestAPIGC(t *testing.T) {
 
 	// Put an orphaned blob (no manifest in DB references it).
 	orphanData := bytes.Repeat([]byte("z"), 256)
-	ts.blobs.Put(bytes.NewReader(orphanData))
+	ts.blobs.Put(t.Context(), bytes.NewReader(orphanData))
 
 	rr := ts.do(t, http.MethodPost, "/api/gc", nil, nil)
 	mustStatus(t, rr, http.StatusOK)

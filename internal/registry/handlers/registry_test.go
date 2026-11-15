@@ -43,7 +43,7 @@ func TestBlob_HeadFound(t *testing.T) {
 	data := []byte("test blob content")
 	d := digest(data)
 
-	if _, _, err := ts.blobs.Put(bytes.NewReader(data)); err != nil {
+	if _, _, err := ts.blobs.Put(t.Context(), bytes.NewReader(data)); err != nil {
 		t.Fatal(err)
 	}
 	ts.svc.SaveBlob(t.Context(), d, int64(len(data)))
@@ -73,7 +73,7 @@ func TestBlob_GetNotFound(t *testing.T) {
 func TestBlob_GetFound(t *testing.T) {
 	ts := newTestServer(t)
 	data := []byte("downloadable blob")
-	d, _, _ := ts.blobs.Put(bytes.NewReader(data))
+	d, _, _ := ts.blobs.Put(t.Context(), bytes.NewReader(data))
 	ts.svc.SaveBlob(t.Context(), d, int64(len(data)))
 
 	rr := ts.do(t, http.MethodGet, "/v2/myrepo/blobs/"+d, nil, nil)
@@ -89,7 +89,7 @@ func TestBlob_GetFound(t *testing.T) {
 func TestBlob_Delete(t *testing.T) {
 	ts := newTestServer(t)
 	data := []byte("delete me")
-	d, _, _ := ts.blobs.Put(bytes.NewReader(data))
+	d, _, _ := ts.blobs.Put(t.Context(), bytes.NewReader(data))
 	ts.svc.SaveBlob(t.Context(), d, int64(len(data)))
 
 	rr := ts.do(t, http.MethodDelete, "/v2/myrepo/blobs/"+d, nil, nil)

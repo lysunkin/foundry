@@ -52,12 +52,28 @@ var gcLock sync.RWMutex
 // explicitly via the API to make their blobs collectable.
 //
 // uploads may be nil, in which case stale upload temp files are not removed.
+//
+// GC stops at the next blob or upload once ctx is done and returns an error
+// wrapping ctx.Err(). Work already done stays done; every step is safe to
+// repeat, so the next run continues where this one stopped.
 func GarbageCollect(ctx context.Context, repo *RepositoryService, blobs *storage.FilesystemBlobStore, uploads *storage.UploadStore, opts GCOptions) (*GCResult, error) {
 	gcLock.Lock()
 	defer gcLock.Unlock()
 
 	result := &GCResult{DryRun: opts.DryRun, Errors: []string{}}
 	now := time.Now()
+	cancelled := func() error {
+		err := ctx.Err()
+		if err != nil {
+			log.Printf("gc: cancelled after %d deletions (%d bytes), %d stale uploads",
+				result.DeletedBlobs, result.FreedBytes, result.DeletedUploads)
+			err = fmt.Errorf("gc cancelled: %w", err)
+		}
+		return err
+	}
+	if err := cancelled(); err != nil {
+		return nil, err
+	}
 
 	// Phase 1: mark
 	referenced, err := repo.ReferencedBlobDigests(ctx)
@@ -67,7 +83,7 @@ func GarbageCollect(ctx context.Context, repo *RepositoryService, blobs *storage
 	log.Printf("gc: %d referenced blobs", len(referenced))
 
 	// Phase 2: sweep — candidates are the union of disk and DB.
-	onDisk, err := blobs.AllDigests()
+	onDisk, err := blobs.AllDigests(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("gc list disk: %w", err)
 	}
@@ -84,6 +100,9 @@ func GarbageCollect(ctx context.Context, repo *RepositoryService, blobs *storage
 	}
 
 	for digest := range candidates {
+		if err := cancelled(); err != nil {
+			return nil, err
+		}
 		result.ScannedBlobs++
 		if referenced[digest] {
 			continue
@@ -130,6 +149,9 @@ func GarbageCollect(ctx context.Context, repo *RepositoryService, blobs *storage
 			result.Errors = append(result.Errors, fmt.Sprintf("list stale uploads: %v", err))
 		}
 		for _, id := range ids {
+			if err := cancelled(); err != nil {
+				return nil, err
+			}
 			if err := repo.DeleteUpload(ctx, id); err != nil {
 				result.Errors = append(result.Errors, fmt.Sprintf("delete upload %s: %v", id, err))
 				continue
@@ -141,7 +163,7 @@ func GarbageCollect(ctx context.Context, repo *RepositoryService, blobs *storage
 			}
 			result.DeletedUploads++
 		}
-		if _, err := blobs.RemoveStaleTemp(opts.UploadTTL); err != nil {
+		if _, err := blobs.RemoveStaleTemp(ctx, opts.UploadTTL); err != nil {
 			result.Errors = append(result.Errors, fmt.Sprintf("remove stale temp files: %v", err))
 		}
 	}

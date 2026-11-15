@@ -114,6 +114,10 @@ func (h *WebHandler) fail(w http.ResponseWriter, r *http.Request, err error) {
 		http.NotFound(w, r)
 		return
 	}
+	if requestCancelled(r) {
+		http.Error(w, "request cancelled", http.StatusServiceUnavailable)
+		return
+	}
 	log.Printf("web error: %s %q: %v", r.Method, r.URL.Path, err) //nolint:gosec // G706: %q escapes control chars
 	http.Error(w, "internal server error", http.StatusInternalServerError)
 }

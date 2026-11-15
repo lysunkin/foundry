@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -58,7 +59,9 @@ func (s *UploadStore) Create(id string) (string, error) {
 }
 
 // Append writes data to the upload, starting at offset. Returns the new offset.
-func (s *UploadStore) Append(id string, offset int64, r io.Reader) (int64, error) {
+// The copy stops with ctx.Err() once ctx is done; the session's offset is then
+// unknown and the caller must discard or re-validate it.
+func (s *UploadStore) Append(ctx context.Context, id string, offset int64, r io.Reader) (int64, error) {
 	path, err := s.safePath(id)
 	if err != nil {
 		return 0, err
@@ -72,7 +75,7 @@ func (s *UploadStore) Append(id string, offset int64, r io.Reader) (int64, error
 	if _, err := f.Seek(offset, io.SeekStart); err != nil {
 		return 0, fmt.Errorf("upload seek: %w", err)
 	}
-	n, err := io.Copy(f, r)
+	n, err := copyContext(ctx, f, r)
 	if err != nil {
 		return 0, fmt.Errorf("upload write: %w", err)
 	}

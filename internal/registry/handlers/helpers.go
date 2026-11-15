@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"context"
 	"encoding/json"
 	"log"
 	"net/http"
@@ -41,12 +42,34 @@ func jsonResponse(w http.ResponseWriter, status int, v any) {
 // serverError logs err and returns a generic OCI UNKNOWN error. Internal
 // details are never sent to the client.
 func serverError(w http.ResponseWriter, r *http.Request, err error) {
+	if requestCancelled(r) {
+		registryError(w, http.StatusServiceUnavailable, oci.ErrCodeUnknown, "request cancelled")
+		return
+	}
 	log.Printf("server error: %s %q: %v", r.Method, r.URL.Path, err) //nolint:gosec // G706: %q escapes control chars
 	registryError(w, http.StatusInternalServerError, oci.ErrCodeUnknown, "internal server error")
 }
 
 // apiServerError is serverError for the admin JSON API.
 func apiServerError(w http.ResponseWriter, r *http.Request, err error) {
+	if requestCancelled(r) {
+		jsonError(w, http.StatusServiceUnavailable, "request cancelled")
+		return
+	}
 	log.Printf("server error: %s %q: %v", r.Method, r.URL.Path, err) //nolint:gosec // G706: %q escapes control chars
 	jsonError(w, http.StatusInternalServerError, "internal server error")
+}
+
+// requestCancelled reports whether r's context is done (client disconnected,
+// client timeout, or server shutdown) and, if so, logs it at info level. Errors
+// caused by cancellation are not server faults: callers respond 503 instead
+// of 500 and skip the error log. The client has usually gone already; the
+// status matters when the server cancelled (shutdown) and the client is still
+// connected.
+func requestCancelled(r *http.Request) bool {
+	if r.Context().Err() == nil {
+		return false
+	}
+	log.Printf("request cancelled: %s %q: %v", r.Method, r.URL.Path, context.Cause(r.Context())) //nolint:gosec // G706: %q escapes control chars
+	return true
 }

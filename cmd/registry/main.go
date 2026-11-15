@@ -97,7 +97,12 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	httpSrv := srv.HTTPServer()
+	// Request contexts are deliberately not derived from the signal context:
+	// in-flight requests may finish during the drain period and are only
+	// cancelled if it expires.
+	requestsCtx, cancelRequests := context.WithCancel(context.WithoutCancel(ctx))
+	defer cancelRequests()
+	httpSrv := srv.HTTPServer(requestsCtx)
 
 	errCh := make(chan error, 1)
 	go func() {
@@ -111,12 +116,42 @@ func run() error {
 			return err
 		}
 	case <-ctx.Done():
+		stop() // a second SIGINT/SIGTERM now terminates immediately
 		log.Printf("shutting down…")
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-		if err := httpSrv.Shutdown(shutdownCtx); err != nil {
-			return err
-		}
+		return shutdown(context.WithoutCancel(ctx), httpSrv, cancelRequests, drainTimeout, abortTimeout)
+	}
+	return nil
+}
+
+const (
+	// drainTimeout is how long in-flight requests may run after a shutdown
+	// signal before they are cancelled.
+	drainTimeout = 30 * time.Second
+	// abortTimeout is how long cancelled requests get to unwind.
+	abortTimeout = 5 * time.Second
+)
+
+// shutdown stops srv gracefully. It waits up to drain for in-flight requests;
+// if they are still running it calls cancelRequests (cancelling their
+// contexts, e.g. aborting a long GC) and waits up to abort more for them to
+// return.
+//
+// http.Server.Shutdown stops waiting when its context expires but does not
+// cancel running handlers, hence the second phase.
+func shutdown(ctx context.Context, srv *http.Server, cancelRequests context.CancelFunc, drain, abort time.Duration) error {
+	drainCtx, cancel := context.WithTimeout(ctx, drain)
+	defer cancel()
+	err := srv.Shutdown(drainCtx)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		return err
+	}
+
+	log.Printf("shutdown: requests still running after %s; cancelling them", drain)
+	cancelRequests()
+	abortCtx, cancelAbort := context.WithTimeout(ctx, abort)
+	defer cancelAbort()
+	if err := srv.Shutdown(abortCtx); err != nil {
+		return fmt.Errorf("shutdown: requests still running %s after cancellation: %w", abort, err)
 	}
 	return nil
 }

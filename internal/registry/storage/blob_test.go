@@ -38,7 +38,7 @@ func TestBlobStore_Put_RoundTrip(t *testing.T) {
 	s := newBlobStore(t)
 	data := []byte("hello foundry")
 
-	digest, size, err := s.Put(bytes.NewReader(data))
+	digest, size, err := s.Put(t.Context(), bytes.NewReader(data))
 	if err != nil {
 		t.Fatalf("Put: %v", err)
 	}
@@ -69,11 +69,11 @@ func TestBlobStore_Put_Deduplication(t *testing.T) {
 	s := newBlobStore(t)
 	data := []byte("deduplicate me")
 
-	d1, sz1, err := s.Put(bytes.NewReader(data))
+	d1, sz1, err := s.Put(t.Context(), bytes.NewReader(data))
 	if err != nil {
 		t.Fatalf("first Put: %v", err)
 	}
-	d2, sz2, err := s.Put(bytes.NewReader(data))
+	d2, sz2, err := s.Put(t.Context(), bytes.NewReader(data))
 	if err != nil {
 		t.Fatalf("second Put: %v", err)
 	}
@@ -85,7 +85,7 @@ func TestBlobStore_Put_Deduplication(t *testing.T) {
 	}
 
 	// Only one file should be on disk (no orphaned temp files).
-	all, err := s.AllDigests()
+	all, err := s.AllDigests(t.Context())
 	if err != nil {
 		t.Fatalf("AllDigests: %v", err)
 	}
@@ -106,7 +106,7 @@ func TestBlobStore_Put_ConcurrentSameBlob(t *testing.T) {
 	for i := 0; i < n; i++ {
 		go func() {
 			defer wg.Done()
-			d, _, err := s.Put(bytes.NewReader(data))
+			d, _, err := s.Put(t.Context(), bytes.NewReader(data))
 			if err != nil {
 				errs <- err
 				return
@@ -125,7 +125,7 @@ func TestBlobStore_Put_ConcurrentSameBlob(t *testing.T) {
 
 func TestBlobStore_Put_EmptyBlob(t *testing.T) {
 	s := newBlobStore(t)
-	d, size, err := s.Put(bytes.NewReader(nil))
+	d, size, err := s.Put(t.Context(), bytes.NewReader(nil))
 	if err != nil {
 		t.Fatalf("Put empty: %v", err)
 	}
@@ -224,7 +224,7 @@ func TestBlobStore_Exists(t *testing.T) {
 		t.Error("blob should not exist yet")
 	}
 
-	digest, _, _ := s.Put(bytes.NewReader(data))
+	digest, _, _ := s.Put(t.Context(), bytes.NewReader(data))
 
 	ok, err = s.Exists(digest)
 	if err != nil {
@@ -242,7 +242,7 @@ func TestBlobStore_Exists(t *testing.T) {
 func TestBlobStore_Delete(t *testing.T) {
 	s := newBlobStore(t)
 	data := []byte("delete me")
-	digest, _, _ := s.Put(bytes.NewReader(data))
+	digest, _, _ := s.Put(t.Context(), bytes.NewReader(data))
 
 	if err := s.Delete(digest); err != nil {
 		t.Fatalf("Delete: %v", err)
@@ -271,14 +271,14 @@ func TestBlobStore_AllDigests(t *testing.T) {
 	}
 	want := make(map[string]bool)
 	for _, b := range blobs {
-		d, _, err := s.Put(bytes.NewReader(b))
+		d, _, err := s.Put(t.Context(), bytes.NewReader(b))
 		if err != nil {
 			t.Fatal(err)
 		}
 		want[d] = true
 	}
 
-	all, err := s.AllDigests()
+	all, err := s.AllDigests(t.Context())
 	if err != nil {
 		t.Fatalf("AllDigests: %v", err)
 	}
@@ -302,13 +302,13 @@ func TestBlobStore_AllDigests_IgnoresTmpFiles(t *testing.T) {
 	// doing a Put and leaving a tmp file via a controlled path.
 	// Easiest: just create a file with .tmp suffix in the shard dir.
 	data := []byte("real blob")
-	digest, _, _ := store.Put(bytes.NewReader(data))
+	digest, _, _ := store.Put(t.Context(), bytes.NewReader(data))
 
 	// Create a stale temp file in the same shard directory.
 	hexDigest := strings.TrimPrefix(digest, "sha256:")
 	shard := hexDigest[:2]
 	// Access the blob's directory via the store root (white-box via AllDigests).
-	all, _ := store.AllDigests()
+	all, _ := store.AllDigests(t.Context())
 	_ = all // just confirm it works; detailed check below
 
 	// Write a .tmp file and ensure AllDigests doesn't include it.
@@ -317,13 +317,13 @@ func TestBlobStore_AllDigests_IgnoresTmpFiles(t *testing.T) {
 	// Use a second store at a known path to be explicit.
 	dir2 := t.TempDir()
 	s2, _ := storage.NewFilesystemBlobStore(dir2)
-	d2, _, _ := s2.Put(bytes.NewReader(data))
+	d2, _, _ := s2.Put(t.Context(), bytes.NewReader(data))
 	h := strings.TrimPrefix(d2, "sha256:")
 	shardDir := filepath.Join(dir2, "blobs", "sha256", shard)
 	os.MkdirAll(shardDir, 0o755)
 	os.WriteFile(filepath.Join(shardDir, "stale-upload-*.tmp"), []byte("garbage"), 0o644)
 
-	all2, err := s2.AllDigests()
+	all2, err := s2.AllDigests(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}

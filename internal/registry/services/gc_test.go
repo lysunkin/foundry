@@ -31,7 +31,7 @@ func newGCFixtures(t *testing.T) (*services.RepositoryService, *storage.Filesyst
 
 func putBlob(t *testing.T, blobs *storage.FilesystemBlobStore, data []byte) string {
 	t.Helper()
-	digest, _, err := blobs.Put(bytes.NewReader(data))
+	digest, _, err := blobs.Put(t.Context(), bytes.NewReader(data))
 	if err != nil {
 		t.Fatalf("put blob: %v", err)
 	}

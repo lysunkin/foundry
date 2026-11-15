@@ -292,7 +292,7 @@ func (h *RegistryHandler) monolithicPush(w http.ResponseWriter, r *http.Request,
 	}
 	// PutVerified only commits the blob if it hashes to digest, so a
 	// mismatching push leaves nothing behind.
-	size, err := h.blobs.PutVerified(r.Body, digest)
+	size, err := h.blobs.PutVerified(r.Context(), r.Body, digest)
 	if err != nil {
 		if errors.Is(err, storage.ErrDigestMismatch) {
 			registryError(w, http.StatusBadRequest, oci.ErrCodeDigestInvalid, "digest mismatch")
@@ -377,7 +377,7 @@ func (h *RegistryHandler) patchUpload(w http.ResponseWriter, r *http.Request, na
 		}
 	}
 
-	newOffset, err := h.uploads.Append(id, offset, r.Body)
+	newOffset, err := h.uploads.Append(r.Context(), id, offset, r.Body)
 	if err != nil {
 		serverError(w, r, err)
 		return
@@ -410,7 +410,7 @@ func (h *RegistryHandler) putUpload(w http.ResponseWriter, r *http.Request, name
 
 	// The final PUT may carry the last chunk.
 	if r.ContentLength != 0 {
-		newOffset, err := h.uploads.Append(id, offset, r.Body)
+		newOffset, err := h.uploads.Append(r.Context(), id, offset, r.Body)
 		if err != nil {
 			serverError(w, r, err)
 			return
