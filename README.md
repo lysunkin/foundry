@@ -52,6 +52,8 @@ settings as Make variables, e.g. `make run ADDR=127.0.0.1:5000 DATA_DIR=/tmp/reg
 | `-log-format` | `FOUNDRY_LOG_FORMAT` | `text` | `text` or `json` |
 | `-log-level` | `FOUNDRY_LOG_LEVEL` | `info` | `debug`, `info`, `warn` or `error` |
 | `-metrics` | `FOUNDRY_METRICS` | `false` | Serve Prometheus metrics at `/metrics` |
+| `-max-blob-size` | `FOUNDRY_MAX_BLOB_SIZE` | `0` (no limit) | Reject larger blobs, e.g. `5GiB` |
+| `-storage-quota` | `FOUNDRY_STORAGE_QUOTA` | `0` (no limit) | Maximum bytes of blobs and in-flight uploads, e.g. `100GB` |
 
 Invalid values for any of these fail startup.
 
@@ -232,6 +234,26 @@ references it** and it is older than `-gc-grace`. Notes:
 - On SIGINT/SIGTERM the server waits up to 30s for in-flight requests (such
   as a long GC), then cancels them. A second signal exits immediately.
 
+### Limits
+
+Both limits are off by default. Sizes are bytes or a number with a unit:
+`KB`, `MB`, `GB`, `TB` (powers of 1000) or `KiB`, `MiB`, `GiB`, `TiB` (powers
+of 1024), e.g. `-max-blob-size 5GiB -storage-quota 200GB`.
+
+- **`-max-blob-size`** limits a single blob. For chunked uploads, everything
+  uploaded so far counts. Cross-repository mounts copy nothing and are always
+  allowed. Manifests have their own fixed 4 MiB limit.
+- **`-storage-quota`** limits the bytes in `data/blobs/` and `data/uploads/`
+  (the SQLite database is not counted). Abandoned uploads count until GC
+  expires them (`-upload-ttl`). The server measures usage at startup (logged)
+  and logs a warning when usage passes 90% of the quota.
+- An upload over either limit is rejected with `413` `SIZE_INVALID` as soon
+  as the limit is crossed. Nothing is kept: a chunked upload session is
+  discarded and must be restarted.
+- If usage is already over the quota at startup (for example after lowering
+  it), the server starts but rejects pushes until you delete images and run
+  GC.
+
 ### Observability
 
 **Logs** go to stderr, one record per line, in `text` (default) or `json`
@@ -264,6 +286,7 @@ anonymous when anonymous pull is on, otherwise it needs Basic auth.
 | `foundry_gc_runs_total` | `result` (`success`, `error`, `cancelled`) |
 | `foundry_gc_deleted_blobs_total`, `foundry_gc_freed_bytes_total` (dry runs excluded) | |
 | `foundry_gc_duration_seconds` (histogram), `foundry_gc_last_success_timestamp_seconds` | |
+| `foundry_storage_used_bytes`, `foundry_storage_quota_bytes` (`0`: no quota) | |
 
 `route` is one of `v2_blob`, `v2_manifest`, `v2_upload`, `v2_other`, `api`,
 `ui`, `static`, `ops`. Repository names are never used as labels. Go runtime

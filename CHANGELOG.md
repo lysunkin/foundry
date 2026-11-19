@@ -7,6 +7,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Resource limits (roadmap R6), both off by default: `-max-blob-size` /
+  `FOUNDRY_MAX_BLOB_SIZE` and `-storage-quota` / `FOUNDRY_STORAGE_QUOTA`
+  (e.g. `5GiB`, `200GB`). Uploads over a limit get `413 SIZE_INVALID` as soon
+  as the limit is crossed; chunked sessions are discarded. Usage is measured
+  at startup, a warning is logged at 90% of the quota, and
+  `foundry_storage_used_bytes` / `foundry_storage_quota_bytes` are exported
+  with `-metrics`.
+
 - Structured logging with `log/slog` (roadmap R3): `-log-format` /
   `FOUNDRY_LOG_FORMAT` (`text` default, or `json`) and `-log-level` /
   `FOUNDRY_LOG_LEVEL` (`debug`, `info` default, `warn`, `error`).

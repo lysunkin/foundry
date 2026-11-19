@@ -182,6 +182,7 @@ else inferred from shape (`manifests` present → OCI index, otherwise OCI manif
 | `PUT upload?digest=` | 201 | 400 on digest/size mismatch. The session is always destroyed after PUT |
 | `DELETE upload` | 204 | 404 if unknown |
 | Upload ops on another repo's session | — | 404 (sessions are scoped to their repo) |
+| Any blob upload over `-max-blob-size` (offset + body) or `-storage-quota` | — | 413 `SIZE_INVALID` with `Connection: close`; rejected before reading when `Content-Length` is too large, otherwise as soon as the limit is crossed. Monolithic: nothing stored. Chunked: the session is discarded (R6) |
 | `PUT manifest` | 201, `Location` by digest | 400 `DIGEST_INVALID` if a digest reference ≠ content hash; 400 `MANIFEST_BLOB_UNKNOWN` (D5/D6) |
 | `GET/HEAD manifest` | 200 with the stored media type | 404 `MANIFEST_UNKNOWN` |
 | `DELETE manifest/<digest>` | 202, tags cascade | 404 |
@@ -275,7 +276,8 @@ remove orphaned blob temp files older than UploadTTL
   `POST /ui/*` additionally requires `HX-Request: true` (`RequireHTMX`), which
   a cross-site form cannot set without a CORS preflight.
 - Resource limits: manifest body 4 MiB; `ReadHeaderTimeout` 10s,
-  `MaxHeaderBytes` 1 MiB. Blob size is unbounded (see R6).
+  `MaxHeaderBytes` 1 MiB; optional `-max-blob-size` and `-storage-quota`
+  (both off by default, see §6.8).
 
 ### 6.4 Web UI
 
@@ -306,6 +308,8 @@ remove orphaned blob temp files older than UploadTTL
 | `-log-format` / `FOUNDRY_LOG_FORMAT` | `text` | `text` or `json`; anything else fails startup |
 | `-log-level` / `FOUNDRY_LOG_LEVEL` | `info` | `debug`, `info`, `warn`, `error`; anything else fails startup |
 | `-metrics` / `FOUNDRY_METRICS` | `false` | Serve `/metrics`. Invalid env values fail startup |
+| `-max-blob-size` / `FOUNDRY_MAX_BLOB_SIZE` | `0` (no limit) | Bytes, or with `KB`/`MB`/`GB`/`TB` (×1000) or `KiB`/`MiB`/`GiB`/`TiB` (×1024). Invalid values fail startup |
+| `-storage-quota` / `FOUNDRY_STORAGE_QUOTA` | `0` (no limit) | Same format |
 | `FOUNDRY_URL` / `regctl -registry` | `http://localhost:8080` | CLI target |
 | `FOUNDRY_USER`, `FOUNDRY_PASSWORD` / `regctl -user`, `-password-stdin` | empty | CLI credentials (Basic auth) |
 | `regctl -timeout` | `30s` | Per-request timeout, `0` for none. `gc` has none unless set explicitly |
@@ -378,6 +382,34 @@ everything; `cmd/registry` defaults the flag to true.
   stay bounded: route class (`metrics.Route`), known methods or `other`,
   status code, GC result. Never repository names, tags, digests or users.
   Manifest push/pull counts are HTTP request series, not separate metrics.
+
+### 6.8 Resource limits (R6)
+
+- **Usage accounting:** `storage.Usage`, shared by both stores
+  (`storage.WithUsage`), counts the files under `data/blobs/` (including
+  `*.tmp`) and `data/uploads/`; the DB is not counted. `Init` walks them once
+  at startup. Afterwards every write **reserves** bytes before writing
+  (`quotaWriter`; re-sent upload bytes that overwrite counted data are free)
+  and every successful file removal releases the size read just before it.
+  Invariant: the count equals the bytes on disk. Any new code that creates or
+  removes files in storage must go through `quotaWriter` / `removeFile`.
+- **Quota:** a reservation that would pass the quota fails with
+  `storage.ErrQuotaExceeded`, so concurrent writers can never exceed it
+  together. Starting above the quota is allowed (warned); writes are rejected
+  until GC frees space. A warning is logged once when usage crosses 90% and
+  re-armed below it.
+- **Known drift:** two writers committing the same digest at the same instant
+  both rename, so one file's bytes stay counted. The count can only be too
+  high; a restart recomputes it.
+- **Max blob size** is enforced in `handlers` (`limitBody`): up front from
+  `Content-Length`, then by a reader that fails on the first byte past the
+  limit (offset included for chunked uploads). Mounts copy nothing and are
+  not limited.
+- **On rejection:** 413 `SIZE_INVALID` with `Connection: close` (the access
+  log's response wrapper hides `http.MaxBytesReader`'s own connection-close
+  hook, hence the explicit header). Chunked sessions are discarded: after an
+  aborted write the file's state past the offset is unknown.
+- **Metrics:** `foundry_storage_used_bytes`, `foundry_storage_quota_bytes`.
 
 ---
 
@@ -481,7 +513,8 @@ Original item: have handlers and services depend on
 `storage.BlobStore` and a metadata interface rather than concrete types, to
 allow fakes in unit tests and alternative backends.
 
-**R6 — Resource limits (medium).** Configurable maximum blob size and total
+**R6 — Resource limits (medium). Done** (November 2026; see §6.8).
+Original item: configurable maximum blob size and total
 `data/` quota; reject with 413 `SIZE_INVALID`. Streaming uploads should abort
 early.
 
