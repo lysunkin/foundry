@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"sync"
 	"time"
 
@@ -107,8 +107,8 @@ func (c *Collector) Collect(ctx context.Context, opts GCOptions) (*GCResult, err
 	cancelled := func() error {
 		err := ctx.Err()
 		if err != nil {
-			log.Printf("gc: cancelled after %d deletions (%d bytes), %d stale uploads",
-				result.DeletedBlobs, result.FreedBytes, result.DeletedUploads)
+			slog.InfoContext(ctx, "gc cancelled", "deleted_blobs", result.DeletedBlobs,
+				"freed_bytes", result.FreedBytes, "deleted_uploads", result.DeletedUploads)
 			err = fmt.Errorf("gc cancelled: %w", err)
 		}
 		return err
@@ -122,7 +122,7 @@ func (c *Collector) Collect(ctx context.Context, opts GCOptions) (*GCResult, err
 	if err != nil {
 		return nil, fmt.Errorf("gc mark: %w", err)
 	}
-	log.Printf("gc: %d referenced blobs", len(referenced))
+	slog.DebugContext(ctx, "gc mark done", "referenced_blobs", len(referenced))
 
 	// Phase 2: sweep — candidates are the union of disk and DB.
 	onDisk, err := blobs.AllDigests(ctx)
@@ -182,7 +182,7 @@ func (c *Collector) Collect(ctx context.Context, opts GCOptions) (*GCResult, err
 		}
 		result.DeletedBlobs++
 		result.FreedBytes += info.Size
-		log.Printf("gc: deleted blob %s", digest)
+		slog.DebugContext(ctx, "gc deleted blob", "digest", digest, "size", info.Size)
 	}
 
 	if opts.UploadTTL > 0 && !opts.DryRun {
@@ -210,7 +210,8 @@ func (c *Collector) Collect(ctx context.Context, opts GCOptions) (*GCResult, err
 		}
 	}
 
-	log.Printf("gc: complete – deleted %d blobs (%d bytes), %d stale uploads, dry_run=%v",
-		result.DeletedBlobs, result.FreedBytes, result.DeletedUploads, opts.DryRun)
+	slog.InfoContext(ctx, "gc complete", "scanned_blobs", result.ScannedBlobs, "deleted_blobs", result.DeletedBlobs,
+		"freed_bytes", result.FreedBytes, "deleted_uploads", result.DeletedUploads,
+		"errors", len(result.Errors), "dry_run", opts.DryRun)
 	return result, nil
 }

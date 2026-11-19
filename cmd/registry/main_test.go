@@ -1,10 +1,12 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"net"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 )
@@ -140,5 +142,34 @@ func TestShutdownReportsUnresponsiveHandlers(t *testing.T) {
 	err := shutdown(t.Context(), srv, cancel, 10*time.Millisecond, 10*time.Millisecond)
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("shutdown = %v, want DeadlineExceeded", err)
+	}
+}
+
+func TestNewLogger(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		format, level string
+		wantErr       bool
+	}{
+		{"text", "info", false},
+		{"json", "debug", false},
+		{"json", "WARN", false},
+		{"yaml", "info", true},
+		{"text", "verbose", true},
+		{"", "info", true},
+	} {
+		var buf bytes.Buffer
+		logger, err := newLogger(&buf, tc.format, tc.level)
+		if (err != nil) != tc.wantErr {
+			t.Errorf("newLogger(%q, %q) error = %v, want error %t", tc.format, tc.level, err, tc.wantErr)
+			continue
+		}
+		if err != nil {
+			continue
+		}
+		logger.Error("probe")
+		if !strings.Contains(buf.String(), "probe") {
+			t.Errorf("newLogger(%q, %q) wrote %q", tc.format, tc.level, buf.String())
+		}
 	}
 }

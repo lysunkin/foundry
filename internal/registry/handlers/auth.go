@@ -1,7 +1,7 @@
 package handlers
 
 import (
-	"log"
+	"log/slog"
 	"net/http"
 	"strings"
 
@@ -47,11 +47,12 @@ func RequireAuth(cfg AuthConfig) func(http.Handler) http.Handler {
 			if _, hasAuth := r.Header["Authorization"]; hasAuth {
 				user, pass, ok := r.BasicAuth()
 				if ok && cfg.Users.Verify(user, pass) {
+					setRequestUser(r.Context(), user)
 					next.ServeHTTP(w, r)
 					return
 				}
-				log.Printf("auth: rejected credentials for user %q from %s: %s %q", //nolint:gosec // G706: %q escapes control chars
-					user, r.RemoteAddr, r.Method, r.URL.Path)
+				slog.WarnContext(r.Context(), "auth: rejected credentials",
+					"user", user, "remote_addr", r.RemoteAddr, "method", r.Method, "path", r.URL.Path)
 				unauthorized(w, r)
 				return
 			}

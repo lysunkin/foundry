@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/go-chi/chi/v5/middleware"
 
 	"github.com/foundry/registry/internal/auth"
 	"github.com/foundry/registry/internal/registry/handlers"
@@ -61,9 +60,9 @@ func New(
 	r := chi.NewRouter()
 	// Outermost, so it sees the server's own ResponseWriter.
 	r.Use(handlers.AbortReadsOnCancel)
-	r.Use(middleware.RequestID)
-	r.Use(middleware.Logger)
-	r.Use(middleware.Recoverer)
+	r.Use(handlers.RequestID)
+	r.Use(handlers.AccessLog(nil))
+	r.Use(handlers.Recover)
 	// CSRF: reject unsafe cross-site browser requests. Always on; non-browser
 	// clients (docker, regctl, curl) send no Sec-Fetch-Site/Origin and pass.
 	r.Use(http.NewCrossOriginProtection().Handler)

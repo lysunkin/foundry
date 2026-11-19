@@ -9,7 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -443,10 +443,10 @@ func (h *RegistryHandler) putUpload(w http.ResponseWriter, r *http.Request, name
 // request that finished it was cancelled.
 func (h *RegistryHandler) discardUpload(ctx context.Context, id string) {
 	if err := h.uploads.Delete(id); err != nil {
-		log.Printf("discard upload %s: remove temp file: %v", id, err) //nolint:gosec // G706: id validated by storage.ValidUploadID
+		slog.ErrorContext(ctx, "discard upload: remove temp file", "upload_id", id, "err", err)
 	}
 	if err := h.repo.DeleteUpload(context.WithoutCancel(ctx), id); err != nil {
-		log.Printf("discard upload %s: delete db row: %v", id, err) //nolint:gosec // G706: id validated by storage.ValidUploadID
+		slog.ErrorContext(ctx, "discard upload: delete db row", "upload_id", id, "err", err)
 	}
 }
 

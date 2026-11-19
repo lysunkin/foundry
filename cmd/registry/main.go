@@ -6,7 +6,8 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"log"
+	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
@@ -18,6 +19,7 @@ import (
 
 	"github.com/foundry/registry/internal/auth"
 	"github.com/foundry/registry/internal/db"
+	"github.com/foundry/registry/internal/logging"
 	"github.com/foundry/registry/internal/registry"
 	"github.com/foundry/registry/internal/registry/services"
 	"github.com/foundry/registry/internal/registry/storage"
@@ -27,7 +29,8 @@ import (
 
 func main() {
 	if err := run(); err != nil {
-		log.Fatal(err)
+		slog.Error("fatal", "err", err)
+		os.Exit(1)
 	}
 }
 
@@ -47,16 +50,26 @@ func run() error {
 		return err
 	}
 	anonPull := flag.Bool("auth-anonymous-pull", anonPullDefault, "with authentication enabled, allow unauthenticated pulls and browsing")
+	logFormat := flag.String("log-format", envOr("FOUNDRY_LOG_FORMAT", logging.FormatText), "log format: text or json")
+	logLevel := flag.String("log-level", envOr("FOUNDRY_LOG_LEVEL", "info"), "minimum log level: debug, info, warn or error")
 	flag.Parse()
+
+	logger, err := newLogger(os.Stderr, *logFormat, *logLevel)
+	if err != nil {
+		return err
+	}
+	// Packages log through slog's default logger with the request context;
+	// the handler adds the request ID.
+	slog.SetDefault(logger)
 
 	var users *auth.Htpasswd
 	if *htpasswdPath != "" {
 		if users, err = auth.LoadHtpasswd(*htpasswdPath); err != nil {
 			return err
 		}
-		log.Printf("authentication enabled (anonymous pull: %t)", *anonPull)
+		slog.Info("authentication enabled", "anonymous_pull", *anonPull)
 		if !isLoopback(*addr) {
-			log.Printf("WARNING: authentication is enabled on non-loopback address %s; credentials are sent in cleartext unless TLS is terminated in front of the registry", *addr)
+			slog.Warn("authentication is enabled on a non-loopback address; credentials are sent in cleartext unless TLS is terminated in front of the registry", "addr", *addr)
 		}
 	}
 
@@ -106,7 +119,7 @@ func run() error {
 
 	errCh := make(chan error, 1)
 	go func() {
-		log.Printf("Foundry Registry listening on %s  (data: %s)", *addr, *dataDir)
+		slog.Info("Foundry Registry listening", "addr", *addr, "data", *dataDir)
 		errCh <- httpSrv.ListenAndServe()
 	}()
 
@@ -117,7 +130,7 @@ func run() error {
 		}
 	case <-ctx.Done():
 		stop() // a second SIGINT/SIGTERM now terminates immediately
-		log.Printf("shutting down…")
+		slog.Info("shutting down")
 		return shutdown(context.WithoutCancel(ctx), httpSrv, cancelRequests, drainTimeout, abortTimeout)
 	}
 	return nil
@@ -146,7 +159,7 @@ func shutdown(ctx context.Context, srv *http.Server, cancelRequests context.Canc
 		return err
 	}
 
-	log.Printf("shutdown: requests still running after %s; cancelling them", drain)
+	slog.Warn("shutdown: requests still running; cancelling them", "after", drain)
 	cancelRequests()
 	abortCtx, cancelAbort := context.WithTimeout(ctx, abort)
 	defer cancelAbort()
@@ -154,6 +167,16 @@ func shutdown(ctx context.Context, srv *http.Server, cancelRequests context.Canc
 		return fmt.Errorf("shutdown: requests still running %s after cancellation: %w", abort, err)
 	}
 	return nil
+}
+
+// newLogger builds the server logger from the -log-format and -log-level
+// values.
+func newLogger(w io.Writer, format, level string) (*slog.Logger, error) {
+	lvl, err := logging.ParseLevel(level)
+	if err != nil {
+		return nil, err
+	}
+	return logging.New(w, format, lvl)
 }
 
 // envBool parses a boolean environment variable, failing on invalid values.

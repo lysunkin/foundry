@@ -3,7 +3,6 @@ package handlers_test
 import (
 	"bytes"
 	"context"
-	"log"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -13,7 +12,7 @@ import (
 // Errors caused by a cancelled request are answered with 503 in the API's
 // error format and logged at info level, never as a server error.
 //
-// Not parallel: it captures the global logger.
+// Not parallel: it captures the default logger.
 func TestCancelledRequestIsNotAServerError(t *testing.T) {
 	ts := newTestServer(t)
 	orphan, _, err := ts.blobs.Put(t.Context(), bytes.NewReader([]byte("orphan")))
@@ -21,10 +20,7 @@ func TestCancelledRequestIsNotAServerError(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	var logs bytes.Buffer
-	orig := log.Writer()
-	log.SetOutput(&logs)
-	t.Cleanup(func() { log.SetOutput(orig) })
+	logs := captureLogs(t)
 
 	tests := []struct {
 		name, method, path, wantBody string
@@ -51,11 +47,16 @@ func TestCancelledRequestIsNotAServerError(t *testing.T) {
 	if ok, _ := ts.blobs.Exists(orphan); !ok {
 		t.Error("cancelled GC deleted an orphan blob")
 	}
-	out := logs.String()
-	if strings.Contains(out, "server error") {
-		t.Errorf("cancellation logged as server error:\n%s", out)
+	if errs := logRecords(t, logs, "server error"); len(errs) != 0 {
+		t.Errorf("cancellation logged as server error:\n%s", logs)
 	}
-	if got := strings.Count(out, "request cancelled:"); got != len(tests) {
-		t.Errorf("%d 'request cancelled' log lines, want %d:\n%s", got, len(tests), out)
+	cancelled := logRecords(t, logs, "request cancelled")
+	if len(cancelled) != len(tests) {
+		t.Errorf("%d 'request cancelled' records, want %d:\n%s", len(cancelled), len(tests), logs)
+	}
+	for _, rec := range cancelled {
+		if rec["level"] != "INFO" {
+			t.Errorf("cancellation logged at %v, want INFO", rec["level"])
+		}
 	}
 }

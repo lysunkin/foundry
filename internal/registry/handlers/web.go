@@ -3,7 +3,7 @@ package handlers
 import (
 	"context"
 	"errors"
-	"log"
+	"log/slog"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
@@ -112,7 +112,7 @@ func (h *WebHandler) fail(w http.ResponseWriter, r *http.Request, err error) {
 		http.Error(w, "request cancelled", http.StatusServiceUnavailable)
 		return
 	}
-	log.Printf("web error: %s %q: %v", r.Method, r.URL.Path, err) //nolint:gosec // G706: %q escapes control chars
+	slog.ErrorContext(r.Context(), "server error", "method", r.Method, "path", r.URL.Path, "err", err)
 	http.Error(w, "internal server error", http.StatusInternalServerError)
 }
 
@@ -122,7 +122,7 @@ func (h *WebHandler) render(w http.ResponseWriter, r *http.Request, name string,
 		return
 	}
 	if err := h.templates.Render(w, name, data); err != nil {
-		log.Printf("template %s error: %v", name, err)
+		slog.ErrorContext(r.Context(), "render template", "template", name, "err", err)
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 	}
 }
