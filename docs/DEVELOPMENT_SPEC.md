@@ -303,6 +303,9 @@ remove orphaned blob temp files older than UploadTTL
 | `-upload-ttl` | `24h` | Upload session expiry |
 | `-auth-htpasswd` / `FOUNDRY_AUTH_HTPASSWD` | empty (auth off) | bcrypt htpasswd file |
 | `-auth-anonymous-pull` / `FOUNDRY_AUTH_ANONYMOUS_PULL` | `true` | Anonymous reads when auth is on. Invalid env values fail startup |
+| `-log-format` / `FOUNDRY_LOG_FORMAT` | `text` | `text` or `json`; anything else fails startup |
+| `-log-level` / `FOUNDRY_LOG_LEVEL` | `info` | `debug`, `info`, `warn`, `error`; anything else fails startup |
+| `-metrics` / `FOUNDRY_METRICS` | `false` | Serve `/metrics`. Invalid env values fail startup |
 | `FOUNDRY_URL` / `regctl -registry` | `http://localhost:8080` | CLI target |
 | `FOUNDRY_USER`, `FOUNDRY_PASSWORD` / `regctl -user`, `-password-stdin` | empty | CLI credentials (Basic auth) |
 | `regctl -timeout` | `30s` | Per-request timeout, `0` for none. `gc` has none unless set explicitly |
@@ -349,6 +352,33 @@ everything; `cmd/registry` defaults the flag to true.
 - **Startup:** `db.Open(ctx, …)` uses the signal context; an interrupted
   migration rolls back its transaction.
 
+### 6.7 Observability (R3)
+
+- **Logging:** `log/slog` only. `cmd/registry` installs the logger built by
+  `internal/logging` with `slog.SetDefault`; packages log with
+  `slog.*Context(ctx, …)` so the handler can add `request_id`. Use stable
+  keys (`err`, `method`, `path`, `user`, `remote_addr`, `digest`,
+  `upload_id`). Levels: server faults `error`; rejected credentials and
+  degraded readiness `warn`; lifecycle, cancellations, GC summary,
+  migrations `info`; per-item detail (each GC deletion) `debug`. Never log
+  query strings, bodies, `Authorization`, or passwords.
+- **Middleware order** (`registry.New`, outermost first):
+  `AbortReadsOnCancel` (needs the server's own writer) → `RequestID` →
+  `AccessLog(observer)` → `Recover` → CSRF → `RequireAuth` → routes.
+  `Recover` sits inside `AccessLog` so panics are logged and counted as 500.
+  `AccessLog`'s response wrapper implements `Unwrap` (for
+  `http.ResponseController`) and `ReadFrom` (keeps sendfile for blobs).
+- **Request IDs:** a client `X-Request-Id` matching `[A-Za-z0-9._-]{1,64}` is
+  kept, otherwise replaced by a UUID; always echoed.
+- **Health:** `/healthz` checks nothing (liveness must not depend on the
+  DB); `/readyz` pings the DB with a 2s timeout. Both bypass `RequireAuth`.
+- **Metrics** (`internal/metrics`, off by default): own
+  `prometheus.Registry`; HTTP metrics come from `AccessLog`'s
+  `RequestObserver`, GC metrics from a `Collector` decorator. Labels must
+  stay bounded: route class (`metrics.Route`), known methods or `other`,
+  status code, GC result. Never repository names, tags, digests or users.
+  Manifest push/pull counts are HTTP request series, not separate metrics.
+
 ---
 
 ## 7. Engineering standards
@@ -374,7 +404,8 @@ everything; `cmd/registry` defaults the flag to true.
 | Storage | `internal/registry/storage/*_test.go` | Atomicity, dedup, digest verification, path safety |
 | Services | `internal/registry/services/*_test.go` | SQL behaviour, manifest parsing, GC (grace, dry-run, DB/disk sync) |
 | DB | `internal/db/db_test.go` | Migration upgrade from previous schema |
-| Handlers | `internal/registry/handlers/*_test.go` | Status codes and headers via `httptest.NewRecorder`, against real stores, or against hand-written fakes (`fakes_test.go`) to force backend failures |
+| Logging, metrics | `internal/logging`, `internal/metrics` | Request ID attribution, formats/levels; route classification, label bounds, GC decorator |
+| Handlers | `internal/registry/handlers/*_test.go` | Status codes and headers via `httptest.NewRecorder`, against real stores, or against hand-written fakes (`fakes_test.go`) to force backend failures. Log assertions use `captureLogs` (not parallel: it swaps the default logger) |
 | Integration | `tests/integration/*_test.go` | Full server over real HTTP. `regression_test.go` pins every fix from §9 |
 | Manual | `make test-push` | Real Docker client (see README note on Docker Desktop) |
 
@@ -435,7 +466,8 @@ requests stop DB work and shutdown can drain cleanly. Then re-enable the
 `noctx` linter. *Accept:* `noctx` passes; a cancelled request aborts an
 in-flight GC.
 
-**R3 — Structured logging and observability (medium).** Move to `log/slog`
+**R3 — Structured logging and observability (medium). Done** (November
+2026; see §6.7). Original item: move to `log/slog`
 with request IDs (the `RequestID` middleware is already present); add
 `/healthz` and optional Prometheus metrics (push/pull counts, bytes, GC stats).
 

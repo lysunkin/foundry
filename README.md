@@ -18,6 +18,8 @@ A local Docker/OCI container registry in a single Go binary.
 - Optional HTTP Basic authentication (htpasswd, bcrypt) with anonymous pull
 - CSRF protection for the web UI and admin API
 - Graceful shutdown on SIGINT/SIGTERM
+- Structured logs (text or JSON) with request IDs, `/healthz` and `/readyz`
+  probes, optional Prometheus metrics
 
 > **Security:** authentication is **off by default**, and there is no TLS.
 > Without `-auth-htpasswd`, anyone who can reach the port can push, pull and
@@ -47,6 +49,11 @@ settings as Make variables, e.g. `make run ADDR=127.0.0.1:5000 DATA_DIR=/tmp/reg
 | `-upload-ttl` | | `24h` | GC expires upload sessions older than this |
 | `-auth-htpasswd` | `FOUNDRY_AUTH_HTPASSWD` | (empty: auth off) | bcrypt htpasswd file; enables authentication |
 | `-auth-anonymous-pull` | `FOUNDRY_AUTH_ANONYMOUS_PULL` | `true` | With auth on, allow unauthenticated pulls and browsing |
+| `-log-format` | `FOUNDRY_LOG_FORMAT` | `text` | `text` or `json` |
+| `-log-level` | `FOUNDRY_LOG_LEVEL` | `info` | `debug`, `info`, `warn` or `error` |
+| `-metrics` | `FOUNDRY_METRICS` | `false` | Serve Prometheus metrics at `/metrics` |
+
+Invalid values for any of these fail startup.
 
 ### Authentication
 
@@ -68,7 +75,8 @@ With authentication on:
 | Admin API and web UI reads | allowed | 401 |
 | Admin API and web UI writes (delete, GC) | 401 | 401 |
 | `GET /v2/` (client probe) | 401 | 401 |
-| `/static/` | allowed | allowed |
+| `/static/`, `/healthz`, `/readyz` | allowed | allowed |
+| `/metrics` (with `-metrics`) | allowed | 401 |
 
 - 401 responses carry the standard `WWW-Authenticate: Basic realm="foundry"`
   challenge (verified with Docker 29 using the containerd image store). In
@@ -223,6 +231,53 @@ references it** and it is older than `-gc-grace`. Notes:
   where it stopped. The cancelled request gets 503.
 - On SIGINT/SIGTERM the server waits up to 30s for in-flight requests (such
   as a long GC), then cancels them. A second signal exits immediately.
+
+### Observability
+
+**Logs** go to stderr, one record per line, in `text` (default) or `json`
+format (`-log-format`). Every request gets one `request` record with
+`method`, `path`, `status`, `bytes`, `duration_ms`, `remote_addr`,
+`request_id` and, when authenticated, `user`. Query strings, bodies and
+credentials are never logged. Probe and scrape requests (`/healthz`,
+`/readyz`, `/metrics`) log at `debug`.
+
+**Request IDs:** every response carries `X-Request-Id`. A client-supplied
+`X-Request-Id` of 1 to 64 characters from `[A-Za-z0-9._-]` is kept;
+anything else is replaced with a UUID. All log records for a request carry
+its `request_id`.
+
+**Health checks** (never require authentication):
+
+| Endpoint | Meaning | Response |
+|---|---|---|
+| `GET /healthz` | The process serves HTTP (liveness). Checks no dependencies | `200 ok` |
+| `GET /readyz` | The database answers within 2s (readiness) | `200 ok` or `503 not ready` |
+
+**Metrics** (`-metrics`): `GET /metrics` in the Prometheus format. It is
+anonymous when anonymous pull is on, otherwise it needs Basic auth.
+
+| Metric | Labels |
+|---|---|
+| `foundry_http_requests_total` | `route`, `method`, `code` |
+| `foundry_http_request_duration_seconds` (histogram) | `route`, `method` |
+| `foundry_blob_bytes_received_total` / `foundry_blob_bytes_sent_total` | |
+| `foundry_gc_runs_total` | `result` (`success`, `error`, `cancelled`) |
+| `foundry_gc_deleted_blobs_total`, `foundry_gc_freed_bytes_total` (dry runs excluded) | |
+| `foundry_gc_duration_seconds` (histogram), `foundry_gc_last_success_timestamp_seconds` | |
+
+`route` is one of `v2_blob`, `v2_manifest`, `v2_upload`, `v2_other`, `api`,
+`ui`, `static`, `ops`. Repository names are never used as labels. Go runtime
+and process metrics (`go_*`, `process_*`) are included. Examples:
+
+```promql
+# manifest pushes and pulls per second
+sum(rate(foundry_http_requests_total{route="v2_manifest",method="PUT",code="201"}[5m]))
+sum(rate(foundry_http_requests_total{route="v2_manifest",method="GET",code="200"}[5m]))
+# server error ratio
+sum(rate(foundry_http_requests_total{code=~"5.."}[5m])) / sum(rate(foundry_http_requests_total[5m]))
+# time since the last successful GC
+time() - foundry_gc_last_success_timestamp_seconds
+```
 
 ## Architecture
 

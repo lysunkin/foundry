@@ -7,6 +7,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Structured logging with `log/slog` (roadmap R3): `-log-format` /
+  `FOUNDRY_LOG_FORMAT` (`text` default, or `json`) and `-log-level` /
+  `FOUNDRY_LOG_LEVEL` (`debug`, `info` default, `warn`, `error`).
+- `X-Request-Id` on every response; a well-formed client value is kept,
+  otherwise a UUID is generated. Log records of a request carry its
+  `request_id`.
+- `GET /healthz` (liveness) and `GET /readyz` (database readiness, 503 when
+  not ready). Neither requires authentication.
+- Optional Prometheus metrics at `GET /metrics` (`-metrics` /
+  `FOUNDRY_METRICS`, default off): HTTP requests, latency, blob bytes, GC
+  runs. Adds the `github.com/prometheus/client_golang` dependency.
+
 - Optional HTTP Basic authentication (roadmap R1). Enable it with
   `-auth-htpasswd` / `FOUNDRY_AUTH_HTPASSWD` pointing at a bcrypt htpasswd
   file (`htpasswd -B`). `docker login` works; unauthenticated pushes, deletes
@@ -23,6 +35,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- Log output format changed: one structured `request` record per request
+  replaces chi's access log line, and all server messages are structured
+  (text by default). Update any log parsing accordingly.
 - The web UI no longer loads htmx from unpkg: htmx 1.9.12 is embedded in the
   binary and served from `/static/js/htmx.min.js`, so the UI works without
   network access (roadmap R4).
