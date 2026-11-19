@@ -70,6 +70,8 @@ func New(
 
 	r.Handle("/static/*", http.StripPrefix("/static/", http.FileServer(http.FS(staticSub))))
 
+	handlers.NewHealthHandler(repo).Mount(r)
+
 	gc := services.NewCollector(repo, blobs, uploads)
 	handlers.NewRegistryHandler(repo, blobs, uploads).Mount(r)
 	handlers.NewAPIHandler(repo, gc, gcOpts).Mount(r)

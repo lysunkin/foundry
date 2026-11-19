@@ -5,6 +5,19 @@ import (
 	"testing"
 )
 
+// Probes carry no credentials, so health endpoints answer even when every
+// other request needs authentication.
+func TestHealthEndpoints_NoAuthRequired(t *testing.T) {
+	_, anon := newAuthServer(t, false)
+	for _, path := range []string{"/healthz", "/readyz"} {
+		resp := anon.do(t, http.MethodGet, path, nil, nil)
+		mustStatus(t, resp, http.StatusOK)
+		if got := string(readBody(t, resp)); got != "ok\n" {
+			t.Errorf("%s body = %q", path, got)
+		}
+	}
+}
+
 func TestRequestIDHeader(t *testing.T) {
 	rs := newRegistryServer(t)
 

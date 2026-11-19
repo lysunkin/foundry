@@ -36,6 +36,11 @@ func NewRepositoryService(db *sql.DB) *RepositoryService {
 	return &RepositoryService{db: db}
 }
 
+// Ping checks that the database answers.
+func (s *RepositoryService) Ping(ctx context.Context) error {
+	return s.db.PingContext(ctx)
+}
+
 // queryer is satisfied by both *sql.DB and *sql.Tx.
 type queryer interface {
 	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
