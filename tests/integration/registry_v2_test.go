@@ -623,14 +623,23 @@ func TestIntegration_MultiRepo_Isolation(t *testing.T) {
 func TestIntegration_StaticAssets(t *testing.T) {
 	rs := newRegistryServer(t)
 
-	resp := rs.do(t, http.MethodGet, "/static/css/main.css", nil, nil)
-	mustStatus(t, resp, http.StatusOK)
-	body := readBody(t, resp)
-	if len(body) == 0 {
-		t.Error("main.css should not be empty")
-	}
-	if ct := resp.Header.Get("Content-Type"); !strings.Contains(ct, "text/css") {
-		t.Errorf("Content-Type = %q, want text/css", ct)
+	for _, tc := range []struct {
+		path, contentType string
+	}{
+		{"/static/css/main.css", "text/css"},
+		// Vendored so the UI works offline (R4).
+		{"/static/js/htmx.min.js", "javascript"},
+	} {
+		t.Run(tc.path, func(t *testing.T) {
+			resp := rs.do(t, http.MethodGet, tc.path, nil, nil)
+			mustStatus(t, resp, http.StatusOK)
+			if body := readBody(t, resp); len(body) == 0 {
+				t.Error("body should not be empty")
+			}
+			if ct := resp.Header.Get("Content-Type"); !strings.Contains(ct, tc.contentType) {
+				t.Errorf("Content-Type = %q, want %s", ct, tc.contentType)
+			}
+		})
 	}
 }
 

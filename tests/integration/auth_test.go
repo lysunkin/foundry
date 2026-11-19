@@ -116,9 +116,11 @@ func TestAuth_AnonymousPullDisabled(t *testing.T) {
 	}
 
 	// Static assets stay public so the login prompt page can be styled.
-	resp := anon.do(t, http.MethodGet, "/static/css/main.css", nil, nil)
-	mustStatus(t, resp, http.StatusOK)
-	readBody(t, resp)
+	for _, path := range []string{"/static/css/main.css", "/static/js/htmx.min.js"} {
+		resp := anon.do(t, http.MethodGet, path, nil, nil)
+		mustStatus(t, resp, http.StatusOK)
+		readBody(t, resp)
+	}
 }
 
 func TestAuth_AdminAPIAndGC(t *testing.T) {
