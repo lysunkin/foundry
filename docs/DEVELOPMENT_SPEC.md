@@ -279,7 +279,13 @@ remove orphaned blob temp files older than UploadTTL
 - Rendering goes into a buffer and is written only on success.
 - Deletes use `hx-swap="delete"` on the row (or a redirect for manifests),
   never swap API JSON into the page.
-- htmx is loaded from unpkg (see R4).
+- htmx 1.9.12 is vendored at `web/static/js/htmx.min.js` (0BSD license
+  alongside) and embedded in the binary, so the UI needs no network access
+  (R4). The file is byte-identical to `dist/htmx.min.js` in the npm package
+  `htmx.org@1.9.12` (sha256
+  `449317ade7881e949510db614991e195c3a099c4c791c24dacec55f9f4a2a452`).
+  Templates must not load assets from other origins
+  (`TestTemplatesHaveNoExternalAssets`).
 
 ### 6.5 Configuration
 
@@ -427,7 +433,8 @@ in-flight GC.
 with request IDs (the `RequestID` middleware is already present); add
 `/healthz` and optional Prometheus metrics (push/pull counts, bytes, GC stats).
 
-**R4 — Vendor htmx (medium).** Embed `htmx.min.js` under `web/static/js/` and
+**R4 — Vendor htmx (medium). Done** (November 2026; see §6.4).
+Original item: embed `htmx.min.js` under `web/static/js/` and
 drop the unpkg dependency, so the UI works offline (matching the
 single-binary goal). *Accept:* the UI works with no network access.
 

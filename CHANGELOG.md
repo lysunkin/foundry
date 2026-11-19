@@ -23,6 +23,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- The web UI no longer loads htmx from unpkg: htmx 1.9.12 is embedded in the
+  binary and served from `/static/js/htmx.min.js`, so the UI works without
+  network access (roadmap R4).
 - CSRF protection is always on: state-changing requests from another site
   (detected via `Sec-Fetch-Site`/`Origin`) are rejected with 403, and
   `POST /ui/gc` requires the `HX-Request: true` header that htmx sends.
