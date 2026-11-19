@@ -19,8 +19,9 @@ func basicAuth(user, pass string) string {
 }
 
 // newAuthServer starts a registry with user alice/secret. It returns a client
-// that authenticates and one that doesn't, sharing the same server.
-func newAuthServer(t *testing.T, anonymousPull bool) (authed, anon *registryServer) {
+// that authenticates and one that doesn't, sharing the same server. Extra
+// configure functions adjust the rest of the configuration.
+func newAuthServer(t *testing.T, anonymousPull bool, configure ...func(*registry.Config)) (authed, anon *registryServer) {
 	t.Helper()
 	hash, err := bcrypt.GenerateFromPassword([]byte("secret"), bcrypt.MinCost)
 	if err != nil {
@@ -33,6 +34,9 @@ func newAuthServer(t *testing.T, anonymousPull bool) (authed, anon *registryServ
 	authed = newRegistryServerWithConfig(t, func(c *registry.Config) {
 		c.Users = users
 		c.AnonymousPull = anonymousPull
+		for _, f := range configure {
+			f(c)
+		}
 	})
 	authed.auth = basicAuth("alice", "secret")
 	a := *authed

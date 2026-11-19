@@ -12,6 +12,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/foundry/registry/internal/auth"
+	"github.com/foundry/registry/internal/metrics"
 	"github.com/foundry/registry/internal/registry/handlers"
 	"github.com/foundry/registry/internal/registry/services"
 	"github.com/foundry/registry/internal/registry/storage"
@@ -34,6 +35,9 @@ type Config struct {
 	// AnonymousPull allows unauthenticated reads (pull, browse) when Users
 	// is set. The zero value requires authentication for everything.
 	AnonymousPull bool
+
+	// Metrics enables Prometheus metrics at GET /metrics.
+	Metrics bool
 }
 
 // Server wraps the HTTP router and its dependencies.
@@ -57,11 +61,20 @@ func New(
 	}
 	gcOpts := services.GCOptions{GracePeriod: cfg.GCGracePeriod, UploadTTL: cfg.UploadTTL}
 
+	var gc handlers.Collector = services.NewCollector(repo, blobs, uploads)
+	var observer handlers.RequestObserver // nil: no metrics
+	var m *metrics.Metrics
+	if cfg.Metrics {
+		m = metrics.New()
+		observer = m
+		gc = m.InstrumentCollector(gc)
+	}
+
 	r := chi.NewRouter()
 	// Outermost, so it sees the server's own ResponseWriter.
 	r.Use(handlers.AbortReadsOnCancel)
 	r.Use(handlers.RequestID)
-	r.Use(handlers.AccessLog(nil))
+	r.Use(handlers.AccessLog(observer))
 	r.Use(handlers.Recover)
 	// CSRF: reject unsafe cross-site browser requests. Always on; non-browser
 	// clients (docker, regctl, curl) send no Sec-Fetch-Site/Origin and pass.
@@ -72,7 +85,11 @@ func New(
 
 	handlers.NewHealthHandler(repo).Mount(r)
 
-	gc := services.NewCollector(repo, blobs, uploads)
+	if m != nil {
+		// Subject to RequireAuth like any read: anonymous when anonymous
+		// pull is on, otherwise Basic auth.
+		r.Method(http.MethodGet, "/metrics", m.Handler())
+	}
 	handlers.NewRegistryHandler(repo, blobs, uploads).Mount(r)
 	handlers.NewAPIHandler(repo, gc, gcOpts).Mount(r)
 	handlers.NewWebHandler(repo, gc, gcOpts, tmpls).Mount(r)

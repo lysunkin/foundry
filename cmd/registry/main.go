@@ -50,6 +50,11 @@ func run() error {
 		return err
 	}
 	anonPull := flag.Bool("auth-anonymous-pull", anonPullDefault, "with authentication enabled, allow unauthenticated pulls and browsing")
+	metricsDefault, err := envBool("FOUNDRY_METRICS", false)
+	if err != nil {
+		return err
+	}
+	enableMetrics := flag.Bool("metrics", metricsDefault, "serve Prometheus metrics at /metrics")
 	logFormat := flag.String("log-format", envOr("FOUNDRY_LOG_FORMAT", logging.FormatText), "log format: text or json")
 	logLevel := flag.String("log-level", envOr("FOUNDRY_LOG_LEVEL", "info"), "minimum log level: debug, info, warn or error")
 	flag.Parse()
@@ -105,6 +110,7 @@ func run() error {
 		UploadTTL:     *uploadTTL,
 		Users:         users,
 		AnonymousPull: *anonPull,
+		Metrics:       *enableMetrics,
 	}
 	srv, err := registry.New(cfg, services.NewRepositoryService(database), blobStore, uploadStore, tmpls, web.StaticFS)
 	if err != nil {
