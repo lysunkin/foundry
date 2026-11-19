@@ -43,16 +43,17 @@ type BlobInfo struct {
 // content-addressed, concurrent writers of the same digest produce identical
 // files and the last rename wins harmlessly; no locking is required.
 type FilesystemBlobStore struct {
-	root string
+	root  string
+	usage *Usage // nil: no accounting
 }
 
 // NewFilesystemBlobStore creates a store rooted at dir/blobs.
-func NewFilesystemBlobStore(dir string) (*FilesystemBlobStore, error) {
+func NewFilesystemBlobStore(dir string, opts ...Option) (*FilesystemBlobStore, error) {
 	root := filepath.Join(dir, "blobs", "sha256")
 	if err := os.MkdirAll(root, 0o755); err != nil {
 		return nil, fmt.Errorf("blob store init: %w", err)
 	}
-	return &FilesystemBlobStore{root: root}, nil
+	return &FilesystemBlobStore{root: root, usage: applyOptions(opts).usage}, nil
 }
 
 // Put streams r to a temp file, computes its sha256, then atomically renames
@@ -78,15 +79,18 @@ func (s *FilesystemBlobStore) put(ctx context.Context, r io.Reader, expected str
 		return "", 0, fmt.Errorf("blob tmp: %w", err)
 	}
 	tmpName := tmp.Name()
+	qw := &quotaWriter{w: tmp, u: s.usage}
 	committed := false
 	defer func() {
 		if !committed {
-			os.Remove(tmpName)
+			// Best effort: a leftover temp file is counted until GC's
+			// RemoveStaleTemp deletes it.
+			_ = s.usage.removeFile(tmpName, qw.added)
 		}
 	}()
 
 	h := sha256.New()
-	size, err := copyContext(ctx, io.MultiWriter(tmp, h), r)
+	size, err := copyContext(ctx, io.MultiWriter(qw, h), r)
 	if err != nil {
 		tmp.Close()
 		return "", 0, fmt.Errorf("blob write: %w", err)
@@ -104,7 +108,7 @@ func (s *FilesystemBlobStore) put(ctx context.Context, r io.Reader, expected str
 		return "", 0, fmt.Errorf("%w: expected %s, got %s", ErrDigestMismatch, expected, digest)
 	}
 
-	if err := s.commit(tmpName, digest); err != nil {
+	if err := s.commit(tmpName, digest, size); err != nil {
 		return "", 0, err
 	}
 	committed = true
@@ -136,10 +140,12 @@ func (s *FilesystemBlobStore) PutAt(digest string, tempPath string, expectedSize
 	if got != digest {
 		return fmt.Errorf("%w: expected %s, got %s", ErrDigestMismatch, digest, got)
 	}
-	return s.commit(tempPath, digest)
+	return s.commit(tempPath, digest, n)
 }
 
-func (s *FilesystemBlobStore) commit(src, digest string) error {
+// commit moves src (size bytes, already accounted) to digest's path, or
+// removes it if the blob is already stored.
+func (s *FilesystemBlobStore) commit(src, digest string, size int64) error {
 	dest, err := s.blobPath(digest)
 	if err != nil {
 		return err
@@ -149,7 +155,7 @@ func (s *FilesystemBlobStore) commit(src, digest string) error {
 	}
 	// Already present — deduplicate (content is identical by definition).
 	if _, err := os.Stat(dest); err == nil {
-		return os.Remove(src)
+		return s.usage.removeFile(src, size)
 	}
 	if err := os.Rename(src, dest); err != nil {
 		return fmt.Errorf("blob rename: %w", err)
@@ -213,7 +219,14 @@ func (s *FilesystemBlobStore) Delete(digest string) error {
 	if err != nil {
 		return err
 	}
-	if err := os.Remove(path); err != nil {
+	info, err := os.Stat(path)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return ErrBlobNotFound
+		}
+		return err
+	}
+	if err := s.usage.removeFile(path, info.Size()); err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			return ErrBlobNotFound
 		}
@@ -276,7 +289,7 @@ func (s *FilesystemBlobStore) RemoveStaleTemp(ctx context.Context, maxAge time.D
 		if err != nil || info.ModTime().After(cutoff) {
 			continue
 		}
-		if os.Remove(filepath.Join(s.root, e.Name())) == nil {
+		if s.usage.removeFile(filepath.Join(s.root, e.Name()), info.Size()) == nil {
 			removed++
 		}
 	}
