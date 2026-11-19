@@ -26,16 +26,13 @@ import (
 
 // RegistryHandler implements the OCI Distribution Spec v2 endpoints.
 type RegistryHandler struct {
-	repo    *services.RepositoryService
-	blobs   *storage.FilesystemBlobStore
-	uploads *storage.UploadStore
+	repo    RegistryMetadata
+	blobs   BlobStore
+	uploads UploadStore
 }
 
-func NewRegistryHandler(
-	repo *services.RepositoryService,
-	blobs *storage.FilesystemBlobStore,
-	uploads *storage.UploadStore,
-) *RegistryHandler {
+// NewRegistryHandler returns a handler for the /v2 endpoints.
+func NewRegistryHandler(repo RegistryMetadata, blobs BlobStore, uploads UploadStore) *RegistryHandler {
 	return &RegistryHandler{repo: repo, blobs: blobs, uploads: uploads}
 }
 

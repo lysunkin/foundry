@@ -33,25 +33,6 @@ type BlobInfo struct {
 	ModTime time.Time
 }
 
-// BlobStore defines content-addressable blob operations.
-type BlobStore interface {
-	// Put stores r under its sha256 digest. Returns the final digest and size.
-	Put(ctx context.Context, r io.Reader) (digest string, size int64, err error)
-	// PutVerified is Put, but fails with ErrDigestMismatch (and stores nothing)
-	// unless the content hashes to expected.
-	PutVerified(ctx context.Context, r io.Reader, expected string) (size int64, err error)
-	// Get opens the blob for reading. Caller must close it.
-	Get(digest string) (io.ReadSeekCloser, int64, error)
-	// Stat returns blob metadata.
-	Stat(digest string) (BlobInfo, error)
-	// Exists reports whether the blob is present.
-	Exists(digest string) (bool, error)
-	// Delete removes the blob.
-	Delete(digest string) error
-}
-
-var _ BlobStore = (*FilesystemBlobStore)(nil)
-
 // FilesystemBlobStore stores blobs on disk, sharded by the first two hex chars
 // of the digest — identical to Git's object layout.
 //

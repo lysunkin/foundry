@@ -71,9 +71,10 @@ func New(
 
 	r.Handle("/static/*", http.StripPrefix("/static/", http.FileServer(http.FS(staticSub))))
 
+	gc := services.NewCollector(repo, blobs, uploads)
 	handlers.NewRegistryHandler(repo, blobs, uploads).Mount(r)
-	handlers.NewAPIHandler(repo, blobs, uploads, gcOpts).Mount(r)
-	handlers.NewWebHandler(repo, blobs, uploads, gcOpts, tmpls).Mount(r)
+	handlers.NewAPIHandler(repo, gc, gcOpts).Mount(r)
+	handlers.NewWebHandler(repo, gc, gcOpts, tmpls).Mount(r)
 
 	return &Server{cfg: cfg, router: r}, nil
 }

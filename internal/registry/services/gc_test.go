@@ -58,9 +58,9 @@ func TestGC_DeletesUnreferencedBlobs(t *testing.T) {
 	digest := services.ComputeDigest(manifestJSON)
 	svc.SaveManifest(t.Context(), "repo", digest, "application/vnd.oci.image.manifest.v1+json", manifestJSON)
 
-	result, err := services.GarbageCollect(t.Context(), svc, blobs, nil, services.GCOptions{})
+	result, err := services.NewCollector(svc, blobs, nil).Collect(t.Context(), services.GCOptions{})
 	if err != nil {
-		t.Fatalf("GarbageCollect: %v", err)
+		t.Fatalf("Collect: %v", err)
 	}
 
 	if result.ScannedBlobs != 2 {
@@ -91,9 +91,9 @@ func TestGC_NoOrphans(t *testing.T) {
 	m := []byte(`{"schemaVersion":2,"config":{"digest":"` + d + `"},"layers":[]}`)
 	svc.SaveManifest(t.Context(), "repo", services.ComputeDigest(m), "application/vnd.oci.image.manifest.v1+json", m)
 
-	result, err := services.GarbageCollect(t.Context(), svc, blobs, nil, services.GCOptions{})
+	result, err := services.NewCollector(svc, blobs, nil).Collect(t.Context(), services.GCOptions{})
 	if err != nil {
-		t.Fatalf("GarbageCollect: %v", err)
+		t.Fatalf("Collect: %v", err)
 	}
 	if result.DeletedBlobs != 0 {
 		t.Errorf("expected 0 deletions, got %d", result.DeletedBlobs)
@@ -106,9 +106,9 @@ func TestGC_NoOrphans(t *testing.T) {
 func TestGC_EmptyStore(t *testing.T) {
 	svc, blobs := newGCFixtures(t)
 
-	result, err := services.GarbageCollect(t.Context(), svc, blobs, nil, services.GCOptions{})
+	result, err := services.NewCollector(svc, blobs, nil).Collect(t.Context(), services.GCOptions{})
 	if err != nil {
-		t.Fatalf("GarbageCollect on empty store: %v", err)
+		t.Fatalf("Collect on empty store: %v", err)
 	}
 	if result.ScannedBlobs != 0 {
 		t.Errorf("ScannedBlobs = %d, want 0", result.ScannedBlobs)
@@ -131,7 +131,7 @@ func TestGC_FreedBytesAccounting(t *testing.T) {
 	putBlob(t, blobs, smallBlob)
 	putBlob(t, blobs, largeBlob)
 
-	result, err := services.GarbageCollect(t.Context(), svc, blobs, nil, services.GCOptions{})
+	result, err := services.NewCollector(svc, blobs, nil).Collect(t.Context(), services.GCOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -159,7 +159,7 @@ func TestGC_ManifestReferencedBlobProtected(t *testing.T) {
 	md := services.ComputeDigest(manifestJSON)
 	svc.SaveManifest(t.Context(), "repo", md, "application/vnd.oci.image.manifest.v1+json", manifestJSON)
 
-	result, err := services.GarbageCollect(t.Context(), svc, blobs, nil, services.GCOptions{})
+	result, err := services.NewCollector(svc, blobs, nil).Collect(t.Context(), services.GCOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -174,7 +174,7 @@ func TestGC_GracePeriodProtectsFreshBlobs(t *testing.T) {
 	d := putBlob(t, blobs, []byte("fresh, not yet referenced"))
 	svc.SaveBlob(t.Context(), d, 25)
 
-	res, err := services.GarbageCollect(t.Context(), svc, blobs, nil, services.GCOptions{GracePeriod: time.Hour})
+	res, err := services.NewCollector(svc, blobs, nil).Collect(t.Context(), services.GCOptions{GracePeriod: time.Hour})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -190,7 +190,7 @@ func TestGC_DryRunDeletesNothing(t *testing.T) {
 	svc, blobs := newGCFixtures(t)
 	d := putBlob(t, blobs, []byte("orphan"))
 
-	res, err := services.GarbageCollect(t.Context(), svc, blobs, nil, services.GCOptions{DryRun: true})
+	res, err := services.NewCollector(svc, blobs, nil).Collect(t.Context(), services.GCOptions{DryRun: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -207,7 +207,7 @@ func TestGC_RemovesDBRowOfCollectedBlob(t *testing.T) {
 	d := putBlob(t, blobs, []byte("pushed then abandoned"))
 	svc.SaveBlob(t.Context(), d, 21)
 
-	if _, err := services.GarbageCollect(t.Context(), svc, blobs, nil, services.GCOptions{}); err != nil {
+	if _, err := services.NewCollector(svc, blobs, nil).Collect(t.Context(), services.GCOptions{}); err != nil {
 		t.Fatal(err)
 	}
 	if ok, _ := svc.BlobExists(t.Context(), d); ok {

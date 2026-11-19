@@ -9,24 +9,19 @@ import (
 
 	"github.com/foundry/registry/internal/oci"
 	"github.com/foundry/registry/internal/registry/services"
-	"github.com/foundry/registry/internal/registry/storage"
 )
 
 // APIHandler provides the /api/... admin endpoints.
 type APIHandler struct {
-	repo    *services.RepositoryService
-	blobs   *storage.FilesystemBlobStore
-	uploads *storage.UploadStore
-	gcOpts  services.GCOptions
+	repo   APIMetadata
+	gc     Collector
+	gcOpts services.GCOptions
 }
 
-func NewAPIHandler(
-	repo *services.RepositoryService,
-	blobs *storage.FilesystemBlobStore,
-	uploads *storage.UploadStore,
-	gcOpts services.GCOptions,
-) *APIHandler {
-	return &APIHandler{repo: repo, blobs: blobs, uploads: uploads, gcOpts: gcOpts}
+// NewAPIHandler returns a handler for the /api endpoints. gcOpts are the
+// defaults for POST /api/gc.
+func NewAPIHandler(repo APIMetadata, gc Collector, gcOpts services.GCOptions) *APIHandler {
+	return &APIHandler{repo: repo, gc: gc, gcOpts: gcOpts}
 }
 
 func (h *APIHandler) Mount(r chi.Router) {
@@ -142,7 +137,7 @@ func (h *APIHandler) deleteManifest(w http.ResponseWriter, r *http.Request, name
 func (h *APIHandler) runGC(w http.ResponseWriter, r *http.Request) {
 	opts := h.gcOpts
 	opts.DryRun = r.URL.Query().Get("dry_run") == "true"
-	result, err := services.GarbageCollect(r.Context(), h.repo, h.blobs, h.uploads, opts)
+	result, err := h.gc.Collect(r.Context(), opts)
 	if err != nil {
 		apiServerError(w, r, err)
 		return
