@@ -60,6 +60,12 @@ cmd/regctl     ── CLI; talks only to /api over HTTP
 - `services` may import `storage` (GC only) and `oci`.
 - `handlers` are the only layer that knows about HTTP status codes and OCI
   error codes. Services return sentinel errors (§5.4).
+- Consumers depend on small interfaces they define themselves (R5), listing
+  only the methods they call: `handlers/stores.go` (`RegistryMetadata`,
+  `APIMetadata`, `WebMetadata`, `BlobStore`, `UploadStore`, `Collector`) and,
+  for GC, unexported interfaces in `services/gc.go`. Only `registry.New`
+  (the composition root) handles the concrete types. GC runs through
+  `services.Collector` (`NewCollector(repo, blobs, uploads).Collect`).
 - Validation of untrusted input happens at the HTTP boundary (`handlers`) **and**
   at the storage choke point (`storage.blobPath`, `UploadStore.safePath`). This
   is defence in depth: storage must stay safe even when called incorrectly.
@@ -368,7 +374,7 @@ everything; `cmd/registry` defaults the flag to true.
 | Storage | `internal/registry/storage/*_test.go` | Atomicity, dedup, digest verification, path safety |
 | Services | `internal/registry/services/*_test.go` | SQL behaviour, manifest parsing, GC (grace, dry-run, DB/disk sync) |
 | DB | `internal/db/db_test.go` | Migration upgrade from previous schema |
-| Handlers | `internal/registry/handlers/*_test.go` | Status codes and headers via `httptest.NewRecorder` |
+| Handlers | `internal/registry/handlers/*_test.go` | Status codes and headers via `httptest.NewRecorder`, against real stores, or against hand-written fakes (`fakes_test.go`) to force backend failures |
 | Integration | `tests/integration/*_test.go` | Full server over real HTTP. `regression_test.go` pins every fix from §9 |
 | Manual | `make test-push` | Real Docker client (see README note on Docker Desktop) |
 
@@ -438,7 +444,8 @@ Original item: embed `htmx.min.js` under `web/static/js/` and
 drop the unpkg dependency, so the UI works offline (matching the
 single-binary goal). *Accept:* the UI works with no network access.
 
-**R5 — Interfaces for stores (medium).** Have handlers and services depend on
+**R5 — Interfaces for stores (medium). Done** (November 2026; see §2).
+Original item: have handlers and services depend on
 `storage.BlobStore` and a metadata interface rather than concrete types, to
 allow fakes in unit tests and alternative backends.
 
