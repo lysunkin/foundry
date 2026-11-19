@@ -26,14 +26,16 @@ import (
 
 // RegistryHandler implements the OCI Distribution Spec v2 endpoints.
 type RegistryHandler struct {
-	repo    RegistryMetadata
-	blobs   BlobStore
-	uploads UploadStore
+	repo        RegistryMetadata
+	blobs       BlobStore
+	uploads     UploadStore
+	maxBlobSize int64 // 0: unlimited
 }
 
-// NewRegistryHandler returns a handler for the /v2 endpoints.
-func NewRegistryHandler(repo RegistryMetadata, blobs BlobStore, uploads UploadStore) *RegistryHandler {
-	return &RegistryHandler{repo: repo, blobs: blobs, uploads: uploads}
+// NewRegistryHandler returns a handler for the /v2 endpoints. Blob uploads
+// larger than maxBlobSize bytes are rejected (0: no limit).
+func NewRegistryHandler(repo RegistryMetadata, blobs BlobStore, uploads UploadStore, maxBlobSize int64) *RegistryHandler {
+	return &RegistryHandler{repo: repo, blobs: blobs, uploads: uploads, maxBlobSize: maxBlobSize}
 }
 
 // Mount registers all registry routes on r.
@@ -283,16 +285,23 @@ func (h *RegistryHandler) monolithicPush(w http.ResponseWriter, r *http.Request,
 		registryError(w, http.StatusBadRequest, oci.ErrCodeDigestInvalid, "invalid digest")
 		return
 	}
+	body, ok := h.limitBody(w, r, 0)
+	if !ok {
+		return
+	}
 	if _, err := h.repo.EnsureRepository(r.Context(), name); err != nil {
 		serverError(w, r, err)
 		return
 	}
 	// PutVerified only commits the blob if it hashes to digest, so a
-	// mismatching push leaves nothing behind.
-	size, err := h.blobs.PutVerified(r.Context(), r.Body, digest)
+	// mismatching or rejected push leaves nothing behind.
+	size, err := h.blobs.PutVerified(r.Context(), body, digest)
 	if err != nil {
 		if errors.Is(err, storage.ErrDigestMismatch) {
 			registryError(w, http.StatusBadRequest, oci.ErrCodeDigestInvalid, "digest mismatch")
+			return
+		}
+		if blobLimitError(w, err) {
 			return
 		}
 		serverError(w, r, err)
@@ -374,8 +383,20 @@ func (h *RegistryHandler) patchUpload(w http.ResponseWriter, r *http.Request, na
 		}
 	}
 
-	newOffset, err := h.uploads.Append(r.Context(), id, offset, r.Body)
+	body, ok := h.limitBody(w, r, offset)
+	if !ok {
+		h.discardUpload(r.Context(), id)
+		return
+	}
+	newOffset, err := h.uploads.Append(r.Context(), id, offset, body)
 	if err != nil {
+		if isBlobLimitError(err) {
+			// The file's state past offset is unknown; the client must
+			// restart, so free the space now.
+			h.discardUpload(r.Context(), id)
+			blobLimitError(w, err)
+			return
+		}
 		serverError(w, r, err)
 		return
 	}
@@ -407,8 +428,18 @@ func (h *RegistryHandler) putUpload(w http.ResponseWriter, r *http.Request, name
 
 	// The final PUT may carry the last chunk.
 	if r.ContentLength != 0 {
-		newOffset, err := h.uploads.Append(r.Context(), id, offset, r.Body)
+		body, ok := h.limitBody(w, r, offset)
+		if !ok {
+			h.discardUpload(r.Context(), id)
+			return
+		}
+		newOffset, err := h.uploads.Append(r.Context(), id, offset, body)
 		if err != nil {
+			if isBlobLimitError(err) {
+				h.discardUpload(r.Context(), id)
+				blobLimitError(w, err)
+				return
+			}
 			serverError(w, r, err)
 			return
 		}

@@ -60,7 +60,7 @@ func TestRegistryHandler_BackendErrors(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			r := chi.NewRouter()
-			handlers.NewRegistryHandler(fakeMeta{err: tc.meta}, fakeBlobs{err: tc.blobs}, fakeUploads{}).Mount(r)
+			handlers.NewRegistryHandler(fakeMeta{err: tc.meta}, fakeBlobs{err: tc.blobs}, fakeUploads{}, 0).Mount(r)
 
 			rec := serveFake(t, r, http.MethodGet, tc.path, nil)
 			if rec.Code != tc.wantCode {

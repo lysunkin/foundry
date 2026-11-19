@@ -101,6 +101,20 @@ func New() *Metrics {
 	}
 }
 
+// ObserveStorage exports the bytes stored (read from used at scrape time)
+// and the quota (0: unlimited).
+func (m *Metrics) ObserveStorage(used func() int64, quota int64) {
+	f := promauto.With(m.reg)
+	f.NewGaugeFunc(prometheus.GaugeOpts{
+		Name: "foundry_storage_used_bytes",
+		Help: "Bytes stored in blobs and in-flight uploads (the database is not counted).",
+	}, func() float64 { return float64(used()) })
+	f.NewGauge(prometheus.GaugeOpts{
+		Name: "foundry_storage_quota_bytes",
+		Help: "Storage quota in bytes; 0 means unlimited.",
+	}).Set(float64(quota))
+}
+
 // Handler serves the metrics in the Prometheus exposition format.
 func (m *Metrics) Handler() http.Handler {
 	return promhttp.HandlerFor(m.reg, promhttp.HandlerOpts{})

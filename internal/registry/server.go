@@ -38,6 +38,14 @@ type Config struct {
 
 	// Metrics enables Prometheus metrics at GET /metrics.
 	Metrics bool
+
+	// MaxBlobSize rejects blob uploads larger than this many bytes with 413.
+	// Zero means no limit.
+	MaxBlobSize int64
+	// Usage is the storage usage shared with the blob and upload stores,
+	// reported in metrics. Nil: not reported. The quota itself is enforced
+	// by the stores.
+	Usage *storage.Usage
 }
 
 // Server wraps the HTTP router and its dependencies.
@@ -66,6 +74,9 @@ func New(
 	var m *metrics.Metrics
 	if cfg.Metrics {
 		m = metrics.New()
+		if cfg.Usage != nil {
+			m.ObserveStorage(cfg.Usage.Used, cfg.Usage.Limit())
+		}
 		observer = m
 		gc = m.InstrumentCollector(gc)
 	}
@@ -90,7 +101,7 @@ func New(
 		// pull is on, otherwise Basic auth.
 		r.Method(http.MethodGet, "/metrics", m.Handler())
 	}
-	handlers.NewRegistryHandler(repo, blobs, uploads).Mount(r)
+	handlers.NewRegistryHandler(repo, blobs, uploads, cfg.MaxBlobSize).Mount(r)
 	handlers.NewAPIHandler(repo, gc, gcOpts).Mount(r)
 	handlers.NewWebHandler(repo, gc, gcOpts, tmpls).Mount(r)
 

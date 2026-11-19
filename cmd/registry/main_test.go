@@ -173,3 +173,34 @@ func TestNewLogger(t *testing.T) {
 		}
 	}
 }
+
+func TestParseSize(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		in      string
+		want    int64
+		wantErr bool
+	}{
+		{"0", 0, false},
+		{"1048576", 1 << 20, false},
+		{"512MiB", 512 << 20, false},
+		{"10GB", 10_000_000_000, false},
+		{"10 gb", 10_000_000_000, false},
+		{"1KiB", 1024, false},
+		{"7b", 7, false},
+		{"2TiB", 2 << 40, false},
+		{"", 0, true},
+		{"GB", 0, true},
+		{"-1", 0, true},
+		{"1.5GB", 0, true},
+		{"10XB", 0, true},
+		{"10G", 0, true},
+		{"9999999TiB", 0, true},
+		{"99999999999999999999", 0, true},
+	} {
+		got, err := parseSize(tc.in)
+		if (err != nil) != tc.wantErr || got != tc.want {
+			t.Errorf("parseSize(%q) = %d, %v; want %d, error %t", tc.in, got, err, tc.want, tc.wantErr)
+		}
+	}
+}
