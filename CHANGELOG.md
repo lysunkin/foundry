@@ -62,3 +62,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Graceful shutdown now cancels requests still running after the 30s drain
   period and waits up to 5s for them to finish, instead of exiting with them
   still running. A second SIGINT/SIGTERM exits immediately.
+
+### Fixed
+
+- `GET`, `HEAD` and `DELETE` of a manifest by a malformed tag (for example
+  `.INVALID_MANIFEST_NAME`) return 404 `MANIFEST_UNKNOWN` instead of 400, as
+  the OCI conformance suite requires. Pushing to a malformed tag is still 400.

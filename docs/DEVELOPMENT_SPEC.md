@@ -156,7 +156,7 @@ last path component is literally `tags` (e.g. `x/tags`) is shadowed by the
 | Input | Rule | Failure |
 |---|---|---|
 | Repository name | Distribution spec regexp, ≤ 255 chars | 400 `NAME_INVALID` |
-| Tag | `[a-zA-Z0-9_][a-zA-Z0-9._-]{0,127}` | 400 `MANIFEST_INVALID` |
+| Tag | `[a-zA-Z0-9_][a-zA-Z0-9._-]{0,127}` | PUT: 400 `MANIFEST_INVALID`; GET/HEAD/DELETE: 404 `MANIFEST_UNKNOWN` (it cannot exist) |
 | Digest | `sha256:[a-f0-9]{64}` only | 400 `DIGEST_INVALID` |
 | Reference | Contains `:` → digest rules, else tag rules | as above |
 | Upload ID | `[A-Za-z0-9_-]{1,64}` (server issues UUIDs) | 404 `BLOB_UPLOAD_UNKNOWN` |
@@ -475,6 +475,7 @@ violation or wrong results; **M** = robustness or maintainability.
 | 21 | M | `regctl`: GC output tied to Go field names, no digest refs, trailing-slash URLs | snake_case JSON, `repo@digest`, `gc -dry-run`, URL normalisation |
 | 22 | M | Runtime DB files committed to git | `data/` ignored and untracked |
 | 23 | M | Dead code (`var _ = hex…`, unused fields), `err ==` comparisons | Removed; `errors.Is` |
+| 24 | H | GET/HEAD/DELETE of a malformed tag (e.g. `.INVALID_MANIFEST_NAME`) returned 400 instead of 404; failed 3 OCI conformance specs (found by R7) | 404 `MANIFEST_UNKNOWN` for reads and deletes; PUT stays 400 |
 
 ---
 

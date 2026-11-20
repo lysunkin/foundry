@@ -501,7 +501,9 @@ func (h *RegistryHandler) deleteUpload(w http.ResponseWriter, r *http.Request, n
 // Manifests
 // --------------------------------------------------------------------------
 
-// referenceParam validates {reference} as either a tag or a digest.
+// referenceParam validates {reference} as either a tag or a digest. A
+// malformed digest is 400 DIGEST_INVALID. A malformed tag is 400
+// MANIFEST_INVALID on PUT, and 404 MANIFEST_UNKNOWN otherwise.
 func referenceParam(w http.ResponseWriter, r *http.Request) (string, bool) {
 	ref := chi.URLParam(r, "reference")
 	if oci.IsDigestReference(ref) {
@@ -512,7 +514,13 @@ func referenceParam(w http.ResponseWriter, r *http.Request) (string, bool) {
 		return ref, true
 	}
 	if !oci.ValidTag(ref) {
-		registryError(w, http.StatusBadRequest, oci.ErrCodeManifestInvalid, "invalid tag")
+		if r.Method == http.MethodPut {
+			registryError(w, http.StatusBadRequest, oci.ErrCodeManifestInvalid, "invalid tag")
+		} else {
+			// A tag that cannot be valid cannot exist (OCI conformance
+			// expects 404 for reads of ".INVALID_MANIFEST_NAME").
+			registryError(w, http.StatusNotFound, oci.ErrCodeManifestUnknown, "manifest unknown")
+		}
 		return "", false
 	}
 	return ref, true
