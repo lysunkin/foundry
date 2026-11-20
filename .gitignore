@@ -38,3 +38,6 @@ go.work.sum
 
 # Registry runtime state (SQLite DB, blobs, uploads) — never commit
 data/
+
+# Conformance reports (scripts/conformance.sh)
+conformance-report/

@@ -6,12 +6,12 @@ ADDR       := :8080
 GOLANGCI_LINT ?= golangci-lint
 PORT          := $(lastword $(subst :, ,$(ADDR)))
 
-.PHONY: all build run tidy fmt fmt-check vet lint lint-fix test test-race test-integration check clean clean-data test-push colima-forward colima-forward-down colima-forward-status help
+.PHONY: all build run tidy fmt fmt-check vet lint lint-fix test test-race test-integration conformance e2e-clients check clean clean-data test-push colima-forward colima-forward-down colima-forward-status help
 
 all: build
 
 help: ## Show available targets
-	@grep -E '^[a-zA-Z_-]+:.*## ' $(MAKEFILE_LIST) | awk 'BEGIN{FS=":.*## "}{printf "  %-22s %s\n", $$1, $$2}'
+	@grep -E '^[a-zA-Z0-9_-]+:.*## ' $(MAKEFILE_LIST) | awk 'BEGIN{FS=":.*## "}{printf "  %-22s %s\n", $$1, $$2}'
 
 build: ## Build registry and regctl binaries
 	go build -o $(BINARY) ./cmd/registry
@@ -59,6 +59,13 @@ test-race: ## Run all tests with the race detector
 
 test-integration: ## Run end-to-end HTTP tests only
 	go test ./tests/integration/... -count=1 -v
+
+conformance: ## OCI conformance suite against a fresh registry (AUTH=1 for auth)
+	./scripts/conformance.sh suite
+
+e2e-clients: ## crane and docker round trips against a fresh registry (AUTH=1 for auth)
+	./scripts/conformance.sh crane
+	./scripts/conformance.sh docker
 
 check: fmt-check vet lint test-race ## Everything CI should run
 
