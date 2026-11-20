@@ -439,9 +439,12 @@ everything; `cmd/registry` defaults the flag to true.
 | Logging, metrics | `internal/logging`, `internal/metrics` | Request ID attribution, formats/levels; route classification, label bounds, GC decorator |
 | Handlers | `internal/registry/handlers/*_test.go` | Status codes and headers via `httptest.NewRecorder`, against real stores, or against hand-written fakes (`fakes_test.go`) to force backend failures. Log assertions use `captureLogs` (not parallel: it swaps the default logger) |
 | Integration | `tests/integration/*_test.go` | Full server over real HTTP. `regression_test.go` pins every fix from §9 |
+| Conformance | `scripts/conformance.sh`, CI `conformance.yml` | OCI conformance suite v1.1.1 (referrers skipped until R8), `crane` and `docker` round trips, each with auth off and on |
 | Manual | `make test-push` | Real Docker client (see README note on Docker Desktop) |
 
-**Gap:** no automated test drives a real Docker/containerd client. See R7.
+Real clients (`crane`, `docker`) and the OCI conformance suite run in CI
+(R7). Not covered: podman, containerd/nerdctl, Docker's classic image store
+unless the CI runner uses it (the job logs which store it tested).
 
 ---
 
@@ -519,7 +522,8 @@ Original item: configurable maximum blob size and total
 `data/` quota; reject with 413 `SIZE_INVALID`. Streaming uploads should abort
 early.
 
-**R7 — Real-client conformance (medium).** CI job that runs the
+**R7 — Real-client conformance (medium). Done** (November 2026; see §8).
+Found and fixed §9 #24. Original item: CI job that runs the
 [OCI distribution conformance suite](https://github.com/opencontainers/distribution-spec/tree/main/conformance)
 and a `crane`/`docker` push-pull round trip against a built binary.
 

@@ -353,6 +353,8 @@ Requires Go 1.26+ and [golangci-lint](https://golangci-lint.run/) v2
 | `make test-race` | All tests with the race detector |
 | `make test-integration` | End-to-end HTTP tests only (verbose) |
 | `make test-push` | Docker push/pull of `nginx` through a running registry |
+| `make conformance` | OCI conformance suite against a fresh registry (`AUTH=1` for auth) |
+| `make e2e-clients` | `crane` and `docker` round trips against a fresh registry (`AUTH=1` for auth) |
 | **colima** (see [Docker in a VM](#docker-in-a-vm-colima-docker-desktop)) | |
 | `make colima-forward` | Let the colima VM reach this registry as `localhost:<port>` |
 | `make colima-forward-down` | Remove the forward |
@@ -377,8 +379,36 @@ make colima-forward ADDR=:5000     # terminal 2
 docker push localhost:5000/nginx:latest
 ```
 
-CI ([.github/workflows/go.yml](.github/workflows/go.yml)) currently runs
-`make build` and `make test` on pushes and pull requests to `main`.
+### Conformance and real clients
+
+[scripts/conformance.sh](scripts/conformance.sh) builds the registry, starts
+it on `127.0.0.1:5000` (override with `PORT`) with a temporary data
+directory, runs one check and cleans up:
+
+| Command | Check | Needs |
+|---|---|---|
+| `make conformance` | [OCI distribution-spec conformance suite](https://github.com/opencontainers/distribution-spec/tree/main/conformance) v1.1.1: pull, push, content discovery, content management | Go, git |
+| `./scripts/conformance.sh crane` | `crane` v0.22.1 push, inspect, pull, cross-repository copy, delete | Go (installs crane) |
+| `./scripts/conformance.sh docker` | `docker build` of a `FROM scratch` image, push, remove, pull, digest check | A Docker daemon that can reach the host's `127.0.0.1` (colima: `make colima-forward ADDR=:5000` first) |
+
+`make e2e-clients` runs the `crane` and `docker` checks. With `AUTH=1`, each
+check runs against a generated htpasswd user with anonymous pull off, and
+`crane`/`docker` also verify that an unauthenticated push is rejected. The
+suite's `junit.xml` and `report.html` and the registry log go to
+`conformance-report/` (override with `REPORT_DIR`).
+
+The suite's referrers specs are skipped until the referrers API (roadmap R8)
+exists; everything else must pass.
+
+### CI
+
+On pushes and pull requests to `main`:
+
+- [go.yml](.github/workflows/go.yml): `make build` and `make check`
+  (golangci-lint v2.15.0).
+- [conformance.yml](.github/workflows/conformance.yml): the suite, `crane`
+  and `docker` checks, each with auth off and on. Reports and registry logs
+  are uploaded as artifacts.
 
 See [docs/DEVELOPMENT_SPEC.md](docs/DEVELOPMENT_SPEC.md) for the design,
 invariants and roadmap.

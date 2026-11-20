@@ -7,6 +7,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Interoperability checks (roadmap R7): `make conformance` runs the OCI
+  distribution-spec conformance suite v1.1.1 against a fresh registry, and
+  `make e2e-clients` runs `crane` and `docker` push/pull round trips (both
+  with `AUTH=1` for authentication). CI runs them on every push and pull
+  request to `main`, and now also runs `make check`.
+
 - Resource limits (roadmap R6), both off by default: `-max-blob-size` /
   `FOUNDRY_MAX_BLOB_SIZE` and `-storage-quota` / `FOUNDRY_STORAGE_QUOTA`
   (e.g. `5GiB`, `200GB`). Uploads over a limit get `413 SIZE_INVALID` as soon
