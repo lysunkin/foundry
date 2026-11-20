@@ -3,7 +3,7 @@ package handlers
 import (
 	"context"
 	"encoding/json"
-	"log"
+	"log/slog"
 	"net/http"
 	"strconv"
 
@@ -28,7 +28,7 @@ func jsonError(w http.ResponseWriter, status int, message string) {
 func jsonResponse(w http.ResponseWriter, status int, v any) {
 	body, err := json.Marshal(v)
 	if err != nil {
-		log.Printf("json encode error: %v", err)
+		slog.Error("encode json response", "err", err)
 		http.Error(w, `{"error":"internal server error"}`, http.StatusInternalServerError)
 		return
 	}
@@ -46,7 +46,7 @@ func serverError(w http.ResponseWriter, r *http.Request, err error) {
 		registryError(w, http.StatusServiceUnavailable, oci.ErrCodeUnknown, "request cancelled")
 		return
 	}
-	log.Printf("server error: %s %q: %v", r.Method, r.URL.Path, err) //nolint:gosec // G706: %q escapes control chars
+	slog.ErrorContext(r.Context(), "server error", "method", r.Method, "path", r.URL.Path, "err", err)
 	registryError(w, http.StatusInternalServerError, oci.ErrCodeUnknown, "internal server error")
 }
 
@@ -56,7 +56,7 @@ func apiServerError(w http.ResponseWriter, r *http.Request, err error) {
 		jsonError(w, http.StatusServiceUnavailable, "request cancelled")
 		return
 	}
-	log.Printf("server error: %s %q: %v", r.Method, r.URL.Path, err) //nolint:gosec // G706: %q escapes control chars
+	slog.ErrorContext(r.Context(), "server error", "method", r.Method, "path", r.URL.Path, "err", err)
 	jsonError(w, http.StatusInternalServerError, "internal server error")
 }
 
@@ -70,6 +70,6 @@ func requestCancelled(r *http.Request) bool {
 	if r.Context().Err() == nil {
 		return false
 	}
-	log.Printf("request cancelled: %s %q: %v", r.Method, r.URL.Path, context.Cause(r.Context())) //nolint:gosec // G706: %q escapes control chars
+	slog.InfoContext(r.Context(), "request cancelled", "method", r.Method, "path", r.URL.Path, "cause", context.Cause(r.Context()))
 	return true
 }

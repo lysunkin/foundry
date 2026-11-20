@@ -1,0 +1,49 @@
+# Interoperability: OCI conformance suite and real clients against the built
+# registry, with and without authentication. See scripts/conformance.sh.
+name: Conformance
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+permissions:
+  contents: read
+
+jobs:
+  conformance:
+    name: ${{ matrix.check }} (auth=${{ matrix.auth }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        check: [ suite, crane, docker ]
+        auth: [ 0, 1 ]
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Go
+      uses: actions/setup-go@v4
+      with:
+        go-version: '1.26'
+
+    - name: Install htpasswd
+      if: matrix.auth == 1
+      run: |
+        command -v htpasswd || { sudo apt-get update && sudo apt-get install -y --no-install-recommends apache2-utils; }
+
+    - name: Run ${{ matrix.check }}
+      env:
+        AUTH: ${{ matrix.auth }}
+        REPORT_DIR: ${{ github.workspace }}/conformance-report
+      run: ./scripts/conformance.sh ${{ matrix.check }}
+
+    - name: Upload reports and registry log
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: conformance-${{ matrix.check }}-auth${{ matrix.auth }}
+        path: conformance-report/
+        if-no-files-found: ignore

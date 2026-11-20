@@ -4,10 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"sync"
 	"time"
 
+	"github.com/foundry/registry/internal/model"
 	"github.com/foundry/registry/internal/registry/storage"
 )
 
@@ -41,7 +42,49 @@ type GCResult struct {
 // referenced swept. It also ensures only one GC runs at a time.
 var gcLock sync.RWMutex
 
-// GarbageCollect runs a mark-and-sweep GC over the blob store.
+// gcMetadata is the metadata GC reads and deletes.
+type gcMetadata interface {
+	ReferencedBlobDigests(ctx context.Context) (map[string]bool, error)
+	AllBlobDigests(ctx context.Context) ([]string, error)
+	GetBlob(ctx context.Context, digest string) (*model.Blob, error)
+	DeleteBlob(ctx context.Context, digest string) error
+	UploadIDsCreatedBefore(ctx context.Context, t time.Time) ([]string, error)
+	DeleteUpload(ctx context.Context, id string) error
+}
+
+// gcBlobs is the blob storage GC sweeps.
+type gcBlobs interface {
+	AllDigests(ctx context.Context) ([]string, error)
+	Stat(digest string) (storage.BlobInfo, error)
+	Delete(digest string) error
+	RemoveStaleTemp(ctx context.Context, maxAge time.Duration) (int, error)
+}
+
+// gcUploads holds the files of upload sessions GC expires.
+type gcUploads interface {
+	Delete(id string) error
+}
+
+// Collector runs garbage collection over one registry's metadata and stores.
+type Collector struct {
+	repo    gcMetadata
+	blobs   gcBlobs
+	uploads gcUploads // nil: upload files are left for the caller
+}
+
+// NewCollector returns a Collector. uploads may be nil, in which case expired
+// upload sessions lose their DB row but not their file.
+func NewCollector(repo gcMetadata, blobs gcBlobs, uploads *storage.UploadStore) *Collector {
+	c := &Collector{repo: repo, blobs: blobs}
+	// Assign only a non-nil pointer: a nil *UploadStore stored in the
+	// interface would compare != nil and be called.
+	if uploads != nil {
+		c.uploads = uploads
+	}
+	return c
+}
+
+// Collect runs a mark-and-sweep GC over the blob store.
 //
 //  1. Mark  – collect every blob digest referenced by any manifest in any
 //     repository.
@@ -51,12 +94,11 @@ var gcLock sync.RWMutex
 // Untagged manifests are retained (and keep their blobs alive); delete them
 // explicitly via the API to make their blobs collectable.
 //
-// uploads may be nil, in which case stale upload temp files are not removed.
-//
 // GC stops at the next blob or upload once ctx is done and returns an error
 // wrapping ctx.Err(). Work already done stays done; every step is safe to
 // repeat, so the next run continues where this one stopped.
-func GarbageCollect(ctx context.Context, repo *RepositoryService, blobs *storage.FilesystemBlobStore, uploads *storage.UploadStore, opts GCOptions) (*GCResult, error) {
+func (c *Collector) Collect(ctx context.Context, opts GCOptions) (*GCResult, error) {
+	repo, blobs, uploads := c.repo, c.blobs, c.uploads
 	gcLock.Lock()
 	defer gcLock.Unlock()
 
@@ -65,8 +107,8 @@ func GarbageCollect(ctx context.Context, repo *RepositoryService, blobs *storage
 	cancelled := func() error {
 		err := ctx.Err()
 		if err != nil {
-			log.Printf("gc: cancelled after %d deletions (%d bytes), %d stale uploads",
-				result.DeletedBlobs, result.FreedBytes, result.DeletedUploads)
+			slog.InfoContext(ctx, "gc cancelled", "deleted_blobs", result.DeletedBlobs,
+				"freed_bytes", result.FreedBytes, "deleted_uploads", result.DeletedUploads)
 			err = fmt.Errorf("gc cancelled: %w", err)
 		}
 		return err
@@ -80,7 +122,7 @@ func GarbageCollect(ctx context.Context, repo *RepositoryService, blobs *storage
 	if err != nil {
 		return nil, fmt.Errorf("gc mark: %w", err)
 	}
-	log.Printf("gc: %d referenced blobs", len(referenced))
+	slog.DebugContext(ctx, "gc mark done", "referenced_blobs", len(referenced))
 
 	// Phase 2: sweep — candidates are the union of disk and DB.
 	onDisk, err := blobs.AllDigests(ctx)
@@ -140,7 +182,7 @@ func GarbageCollect(ctx context.Context, repo *RepositoryService, blobs *storage
 		}
 		result.DeletedBlobs++
 		result.FreedBytes += info.Size
-		log.Printf("gc: deleted blob %s", digest)
+		slog.DebugContext(ctx, "gc deleted blob", "digest", digest, "size", info.Size)
 	}
 
 	if opts.UploadTTL > 0 && !opts.DryRun {
@@ -168,7 +210,8 @@ func GarbageCollect(ctx context.Context, repo *RepositoryService, blobs *storage
 		}
 	}
 
-	log.Printf("gc: complete – deleted %d blobs (%d bytes), %d stale uploads, dry_run=%v",
-		result.DeletedBlobs, result.FreedBytes, result.DeletedUploads, opts.DryRun)
+	slog.InfoContext(ctx, "gc complete", "scanned_blobs", result.ScannedBlobs, "deleted_blobs", result.DeletedBlobs,
+		"freed_bytes", result.FreedBytes, "deleted_uploads", result.DeletedUploads,
+		"errors", len(result.Errors), "dry_run", opts.DryRun)
 	return result, nil
 }

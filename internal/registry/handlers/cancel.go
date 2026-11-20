@@ -3,7 +3,7 @@ package handlers
 import (
 	"context"
 	"errors"
-	"log"
+	"log/slog"
 	"net/http"
 	"time"
 )
@@ -21,12 +21,13 @@ import (
 // ResponseWriter, which supports SetReadDeadline.
 func AbortReadsOnCancel(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ctx := r.Context()
 		rc := http.NewResponseController(w)
 		fired := make(chan struct{})
-		stop := context.AfterFunc(r.Context(), func() {
+		stop := context.AfterFunc(ctx, func() {
 			defer close(fired)
 			if err := rc.SetReadDeadline(time.Now()); err != nil && !errors.Is(err, http.ErrNotSupported) {
-				log.Printf("abort body read: %s %q: %v", r.Method, r.URL.Path, err) //nolint:gosec // G706: %q escapes control chars
+				slog.ErrorContext(ctx, "abort body read", "method", r.Method, "path", r.URL.Path, "err", err)
 			}
 		})
 		defer func() {

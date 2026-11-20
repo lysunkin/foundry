@@ -18,6 +18,8 @@ A local Docker/OCI container registry in a single Go binary.
 - Optional HTTP Basic authentication (htpasswd, bcrypt) with anonymous pull
 - CSRF protection for the web UI and admin API
 - Graceful shutdown on SIGINT/SIGTERM
+- Structured logs (text or JSON) with request IDs, `/healthz` and `/readyz`
+  probes, optional Prometheus metrics
 
 > **Security:** authentication is **off by default**, and there is no TLS.
 > Without `-auth-htpasswd`, anyone who can reach the port can push, pull and
@@ -47,6 +49,13 @@ settings as Make variables, e.g. `make run ADDR=127.0.0.1:5000 DATA_DIR=/tmp/reg
 | `-upload-ttl` | | `24h` | GC expires upload sessions older than this |
 | `-auth-htpasswd` | `FOUNDRY_AUTH_HTPASSWD` | (empty: auth off) | bcrypt htpasswd file; enables authentication |
 | `-auth-anonymous-pull` | `FOUNDRY_AUTH_ANONYMOUS_PULL` | `true` | With auth on, allow unauthenticated pulls and browsing |
+| `-log-format` | `FOUNDRY_LOG_FORMAT` | `text` | `text` or `json` |
+| `-log-level` | `FOUNDRY_LOG_LEVEL` | `info` | `debug`, `info`, `warn` or `error` |
+| `-metrics` | `FOUNDRY_METRICS` | `false` | Serve Prometheus metrics at `/metrics` |
+| `-max-blob-size` | `FOUNDRY_MAX_BLOB_SIZE` | `0` (no limit) | Reject larger blobs, e.g. `5GiB` |
+| `-storage-quota` | `FOUNDRY_STORAGE_QUOTA` | `0` (no limit) | Maximum bytes of blobs and in-flight uploads, e.g. `100GB` |
+
+Invalid values for any of these fail startup.
 
 ### Authentication
 
@@ -68,7 +77,8 @@ With authentication on:
 | Admin API and web UI reads | allowed | 401 |
 | Admin API and web UI writes (delete, GC) | 401 | 401 |
 | `GET /v2/` (client probe) | 401 | 401 |
-| `/static/` | allowed | allowed |
+| `/static/`, `/healthz`, `/readyz` | allowed | allowed |
+| `/metrics` (with `-metrics`) | allowed | 401 |
 
 - 401 responses carry the standard `WWW-Authenticate: Basic realm="foundry"`
   challenge (verified with Docker 29 using the containerd image store). In
@@ -224,6 +234,74 @@ references it** and it is older than `-gc-grace`. Notes:
 - On SIGINT/SIGTERM the server waits up to 30s for in-flight requests (such
   as a long GC), then cancels them. A second signal exits immediately.
 
+### Limits
+
+Both limits are off by default. Sizes are bytes or a number with a unit:
+`KB`, `MB`, `GB`, `TB` (powers of 1000) or `KiB`, `MiB`, `GiB`, `TiB` (powers
+of 1024), e.g. `-max-blob-size 5GiB -storage-quota 200GB`.
+
+- **`-max-blob-size`** limits a single blob. For chunked uploads, everything
+  uploaded so far counts. Cross-repository mounts copy nothing and are always
+  allowed. Manifests have their own fixed 4 MiB limit.
+- **`-storage-quota`** limits the bytes in `data/blobs/` and `data/uploads/`
+  (the SQLite database is not counted). Abandoned uploads count until GC
+  expires them (`-upload-ttl`). The server measures usage at startup (logged)
+  and logs a warning when usage passes 90% of the quota.
+- An upload over either limit is rejected with `413` `SIZE_INVALID` as soon
+  as the limit is crossed. Nothing is kept: a chunked upload session is
+  discarded and must be restarted.
+- If usage is already over the quota at startup (for example after lowering
+  it), the server starts but rejects pushes until you delete images and run
+  GC.
+
+### Observability
+
+**Logs** go to stderr, one record per line, in `text` (default) or `json`
+format (`-log-format`). Every request gets one `request` record with
+`method`, `path`, `status`, `bytes`, `duration_ms`, `remote_addr`,
+`request_id` and, when authenticated, `user`. Query strings, bodies and
+credentials are never logged. Probe and scrape requests (`/healthz`,
+`/readyz`, `/metrics`) log at `debug`.
+
+**Request IDs:** every response carries `X-Request-Id`. A client-supplied
+`X-Request-Id` of 1 to 64 characters from `[A-Za-z0-9._-]` is kept;
+anything else is replaced with a UUID. All log records for a request carry
+its `request_id`.
+
+**Health checks** (never require authentication):
+
+| Endpoint | Meaning | Response |
+|---|---|---|
+| `GET /healthz` | The process serves HTTP (liveness). Checks no dependencies | `200 ok` |
+| `GET /readyz` | The database answers within 2s (readiness) | `200 ok` or `503 not ready` |
+
+**Metrics** (`-metrics`): `GET /metrics` in the Prometheus format. It is
+anonymous when anonymous pull is on, otherwise it needs Basic auth.
+
+| Metric | Labels |
+|---|---|
+| `foundry_http_requests_total` | `route`, `method`, `code` |
+| `foundry_http_request_duration_seconds` (histogram) | `route`, `method` |
+| `foundry_blob_bytes_received_total` / `foundry_blob_bytes_sent_total` | |
+| `foundry_gc_runs_total` | `result` (`success`, `error`, `cancelled`) |
+| `foundry_gc_deleted_blobs_total`, `foundry_gc_freed_bytes_total` (dry runs excluded) | |
+| `foundry_gc_duration_seconds` (histogram), `foundry_gc_last_success_timestamp_seconds` | |
+| `foundry_storage_used_bytes`, `foundry_storage_quota_bytes` (`0`: no quota) | |
+
+`route` is one of `v2_blob`, `v2_manifest`, `v2_upload`, `v2_other`, `api`,
+`ui`, `static`, `ops`. Repository names are never used as labels. Go runtime
+and process metrics (`go_*`, `process_*`) are included. Examples:
+
+```promql
+# manifest pushes and pulls per second
+sum(rate(foundry_http_requests_total{route="v2_manifest",method="PUT",code="201"}[5m]))
+sum(rate(foundry_http_requests_total{route="v2_manifest",method="GET",code="200"}[5m]))
+# server error ratio
+sum(rate(foundry_http_requests_total{code=~"5.."}[5m])) / sum(rate(foundry_http_requests_total[5m]))
+# time since the last successful GC
+time() - foundry_gc_last_success_timestamp_seconds
+```
+
 ## Architecture
 
 ```
@@ -275,6 +353,8 @@ Requires Go 1.26+ and [golangci-lint](https://golangci-lint.run/) v2
 | `make test-race` | All tests with the race detector |
 | `make test-integration` | End-to-end HTTP tests only (verbose) |
 | `make test-push` | Docker push/pull of `nginx` through a running registry |
+| `make conformance` | OCI conformance suite against a fresh registry (`AUTH=1` for auth) |
+| `make e2e-clients` | `crane` and `docker` round trips against a fresh registry (`AUTH=1` for auth) |
 | **colima** (see [Docker in a VM](#docker-in-a-vm-colima-docker-desktop)) | |
 | `make colima-forward` | Let the colima VM reach this registry as `localhost:<port>` |
 | `make colima-forward-down` | Remove the forward |
@@ -299,8 +379,36 @@ make colima-forward ADDR=:5000     # terminal 2
 docker push localhost:5000/nginx:latest
 ```
 
-CI ([.github/workflows/go.yml](.github/workflows/go.yml)) currently runs
-`make build` and `make test` on pushes and pull requests to `main`.
+### Conformance and real clients
+
+[scripts/conformance.sh](scripts/conformance.sh) builds the registry, starts
+it on `127.0.0.1:5000` (override with `PORT`) with a temporary data
+directory, runs one check and cleans up:
+
+| Command | Check | Needs |
+|---|---|---|
+| `make conformance` | [OCI distribution-spec conformance suite](https://github.com/opencontainers/distribution-spec/tree/main/conformance) v1.1.1: pull, push, content discovery, content management | Go, git |
+| `./scripts/conformance.sh crane` | `crane` v0.22.1 push, inspect, pull, cross-repository copy, delete | Go (installs crane) |
+| `./scripts/conformance.sh docker` | `docker build` of a `FROM scratch` image, push, remove, pull, digest check | A Docker daemon that can reach the host's `127.0.0.1` (colima: `make colima-forward ADDR=:5000` first) |
+
+`make e2e-clients` runs the `crane` and `docker` checks. With `AUTH=1`, each
+check runs against a generated htpasswd user with anonymous pull off, and
+`crane`/`docker` also verify that an unauthenticated push is rejected. The
+suite's `junit.xml` and `report.html` and the registry log go to
+`conformance-report/` (override with `REPORT_DIR`).
+
+The suite's referrers specs are skipped until the referrers API (roadmap R8)
+exists; everything else must pass.
+
+### CI
+
+On pushes and pull requests to `main`:
+
+- [go.yml](.github/workflows/go.yml): `make build` and `make check`
+  (golangci-lint v2.15.0).
+- [conformance.yml](.github/workflows/conformance.yml): the suite, `crane`
+  and `docker` checks, each with auth off and on. Reports and registry logs
+  are uploaded as artifacts.
 
 See [docs/DEVELOPMENT_SPEC.md](docs/DEVELOPMENT_SPEC.md) for the design,
 invariants and roadmap.

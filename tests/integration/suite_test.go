@@ -83,11 +83,18 @@ func startRegistryServer(t *testing.T, configure func(*registry.Config), cancell
 	}
 	t.Cleanup(func() { database.Close() })
 
-	blobs, err := storage.NewFilesystemBlobStore(dataDir)
+	cfg := registry.Config{Addr: "127.0.0.1:0", DataDir: dataDir, DBPath: dbPath}
+	if configure != nil {
+		configure(&cfg)
+	}
+
+	// cfg.Usage (nil unless configured) is shared with the stores, as in
+	// cmd/registry.
+	blobs, err := storage.NewFilesystemBlobStore(dataDir, storage.WithUsage(cfg.Usage))
 	if err != nil {
 		t.Fatalf("blob store: %v", err)
 	}
-	ups, err := storage.NewUploadStore(dataDir)
+	ups, err := storage.NewUploadStore(dataDir, storage.WithUsage(cfg.Usage))
 	if err != nil {
 		t.Fatalf("upload store: %v", err)
 	}
@@ -99,10 +106,6 @@ func startRegistryServer(t *testing.T, configure func(*registry.Config), cancell
 		t.Fatalf("templates: %v", err)
 	}
 
-	cfg := registry.Config{Addr: "127.0.0.1:0", DataDir: dataDir, DBPath: dbPath}
-	if configure != nil {
-		configure(&cfg)
-	}
 	srv, err := registry.New(cfg, svc, blobs, ups, tmpls, web.StaticFS)
 	if err != nil {
 		t.Fatalf("registry.New: %v", err)

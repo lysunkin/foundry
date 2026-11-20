@@ -60,6 +60,12 @@ cmd/regctl     ── CLI; talks only to /api over HTTP
 - `services` may import `storage` (GC only) and `oci`.
 - `handlers` are the only layer that knows about HTTP status codes and OCI
   error codes. Services return sentinel errors (§5.4).
+- Consumers depend on small interfaces they define themselves (R5), listing
+  only the methods they call: `handlers/stores.go` (`RegistryMetadata`,
+  `APIMetadata`, `WebMetadata`, `BlobStore`, `UploadStore`, `Collector`) and,
+  for GC, unexported interfaces in `services/gc.go`. Only `registry.New`
+  (the composition root) handles the concrete types. GC runs through
+  `services.Collector` (`NewCollector(repo, blobs, uploads).Collect`).
 - Validation of untrusted input happens at the HTTP boundary (`handlers`) **and**
   at the storage choke point (`storage.blobPath`, `UploadStore.safePath`). This
   is defence in depth: storage must stay safe even when called incorrectly.
@@ -150,7 +156,7 @@ last path component is literally `tags` (e.g. `x/tags`) is shadowed by the
 | Input | Rule | Failure |
 |---|---|---|
 | Repository name | Distribution spec regexp, ≤ 255 chars | 400 `NAME_INVALID` |
-| Tag | `[a-zA-Z0-9_][a-zA-Z0-9._-]{0,127}` | 400 `MANIFEST_INVALID` |
+| Tag | `[a-zA-Z0-9_][a-zA-Z0-9._-]{0,127}` | PUT: 400 `MANIFEST_INVALID`; GET/HEAD/DELETE: 404 `MANIFEST_UNKNOWN` (it cannot exist) |
 | Digest | `sha256:[a-f0-9]{64}` only | 400 `DIGEST_INVALID` |
 | Reference | Contains `:` → digest rules, else tag rules | as above |
 | Upload ID | `[A-Za-z0-9_-]{1,64}` (server issues UUIDs) | 404 `BLOB_UPLOAD_UNKNOWN` |
@@ -176,6 +182,7 @@ else inferred from shape (`manifests` present → OCI index, otherwise OCI manif
 | `PUT upload?digest=` | 201 | 400 on digest/size mismatch. The session is always destroyed after PUT |
 | `DELETE upload` | 204 | 404 if unknown |
 | Upload ops on another repo's session | — | 404 (sessions are scoped to their repo) |
+| Any blob upload over `-max-blob-size` (offset + body) or `-storage-quota` | — | 413 `SIZE_INVALID` with `Connection: close`; rejected before reading when `Content-Length` is too large, otherwise as soon as the limit is crossed. Monolithic: nothing stored. Chunked: the session is discarded (R6) |
 | `PUT manifest` | 201, `Location` by digest | 400 `DIGEST_INVALID` if a digest reference ≠ content hash; 400 `MANIFEST_BLOB_UNKNOWN` (D5/D6) |
 | `GET/HEAD manifest` | 200 with the stored media type | 404 `MANIFEST_UNKNOWN` |
 | `DELETE manifest/<digest>` | 202, tags cascade | 404 |
@@ -269,7 +276,8 @@ remove orphaned blob temp files older than UploadTTL
   `POST /ui/*` additionally requires `HX-Request: true` (`RequireHTMX`), which
   a cross-site form cannot set without a CORS preflight.
 - Resource limits: manifest body 4 MiB; `ReadHeaderTimeout` 10s,
-  `MaxHeaderBytes` 1 MiB. Blob size is unbounded (see R6).
+  `MaxHeaderBytes` 1 MiB; optional `-max-blob-size` and `-storage-quota`
+  (both off by default, see §6.8).
 
 ### 6.4 Web UI
 
@@ -279,7 +287,13 @@ remove orphaned blob temp files older than UploadTTL
 - Rendering goes into a buffer and is written only on success.
 - Deletes use `hx-swap="delete"` on the row (or a redirect for manifests),
   never swap API JSON into the page.
-- htmx is loaded from unpkg (see R4).
+- htmx 1.9.12 is vendored at `web/static/js/htmx.min.js` (0BSD license
+  alongside) and embedded in the binary, so the UI needs no network access
+  (R4). The file is byte-identical to `dist/htmx.min.js` in the npm package
+  `htmx.org@1.9.12` (sha256
+  `449317ade7881e949510db614991e195c3a099c4c791c24dacec55f9f4a2a452`).
+  Templates must not load assets from other origins
+  (`TestTemplatesHaveNoExternalAssets`).
 
 ### 6.5 Configuration
 
@@ -291,6 +305,11 @@ remove orphaned blob temp files older than UploadTTL
 | `-upload-ttl` | `24h` | Upload session expiry |
 | `-auth-htpasswd` / `FOUNDRY_AUTH_HTPASSWD` | empty (auth off) | bcrypt htpasswd file |
 | `-auth-anonymous-pull` / `FOUNDRY_AUTH_ANONYMOUS_PULL` | `true` | Anonymous reads when auth is on. Invalid env values fail startup |
+| `-log-format` / `FOUNDRY_LOG_FORMAT` | `text` | `text` or `json`; anything else fails startup |
+| `-log-level` / `FOUNDRY_LOG_LEVEL` | `info` | `debug`, `info`, `warn`, `error`; anything else fails startup |
+| `-metrics` / `FOUNDRY_METRICS` | `false` | Serve `/metrics`. Invalid env values fail startup |
+| `-max-blob-size` / `FOUNDRY_MAX_BLOB_SIZE` | `0` (no limit) | Bytes, or with `KB`/`MB`/`GB`/`TB` (×1000) or `KiB`/`MiB`/`GiB`/`TiB` (×1024). Invalid values fail startup |
+| `-storage-quota` / `FOUNDRY_STORAGE_QUOTA` | `0` (no limit) | Same format |
 | `FOUNDRY_URL` / `regctl -registry` | `http://localhost:8080` | CLI target |
 | `FOUNDRY_USER`, `FOUNDRY_PASSWORD` / `regctl -user`, `-password-stdin` | empty | CLI credentials (Basic auth) |
 | `regctl -timeout` | `30s` | Per-request timeout, `0` for none. `gc` has none unless set explicitly |
@@ -337,6 +356,61 @@ everything; `cmd/registry` defaults the flag to true.
 - **Startup:** `db.Open(ctx, …)` uses the signal context; an interrupted
   migration rolls back its transaction.
 
+### 6.7 Observability (R3)
+
+- **Logging:** `log/slog` only. `cmd/registry` installs the logger built by
+  `internal/logging` with `slog.SetDefault`; packages log with
+  `slog.*Context(ctx, …)` so the handler can add `request_id`. Use stable
+  keys (`err`, `method`, `path`, `user`, `remote_addr`, `digest`,
+  `upload_id`). Levels: server faults `error`; rejected credentials and
+  degraded readiness `warn`; lifecycle, cancellations, GC summary,
+  migrations `info`; per-item detail (each GC deletion) `debug`. Never log
+  query strings, bodies, `Authorization`, or passwords.
+- **Middleware order** (`registry.New`, outermost first):
+  `AbortReadsOnCancel` (needs the server's own writer) → `RequestID` →
+  `AccessLog(observer)` → `Recover` → CSRF → `RequireAuth` → routes.
+  `Recover` sits inside `AccessLog` so panics are logged and counted as 500.
+  `AccessLog`'s response wrapper implements `Unwrap` (for
+  `http.ResponseController`) and `ReadFrom` (keeps sendfile for blobs).
+- **Request IDs:** a client `X-Request-Id` matching `[A-Za-z0-9._-]{1,64}` is
+  kept, otherwise replaced by a UUID; always echoed.
+- **Health:** `/healthz` checks nothing (liveness must not depend on the
+  DB); `/readyz` pings the DB with a 2s timeout. Both bypass `RequireAuth`.
+- **Metrics** (`internal/metrics`, off by default): own
+  `prometheus.Registry`; HTTP metrics come from `AccessLog`'s
+  `RequestObserver`, GC metrics from a `Collector` decorator. Labels must
+  stay bounded: route class (`metrics.Route`), known methods or `other`,
+  status code, GC result. Never repository names, tags, digests or users.
+  Manifest push/pull counts are HTTP request series, not separate metrics.
+
+### 6.8 Resource limits (R6)
+
+- **Usage accounting:** `storage.Usage`, shared by both stores
+  (`storage.WithUsage`), counts the files under `data/blobs/` (including
+  `*.tmp`) and `data/uploads/`; the DB is not counted. `Init` walks them once
+  at startup. Afterwards every write **reserves** bytes before writing
+  (`quotaWriter`; re-sent upload bytes that overwrite counted data are free)
+  and every successful file removal releases the size read just before it.
+  Invariant: the count equals the bytes on disk. Any new code that creates or
+  removes files in storage must go through `quotaWriter` / `removeFile`.
+- **Quota:** a reservation that would pass the quota fails with
+  `storage.ErrQuotaExceeded`, so concurrent writers can never exceed it
+  together. Starting above the quota is allowed (warned); writes are rejected
+  until GC frees space. A warning is logged once when usage crosses 90% and
+  re-armed below it.
+- **Known drift:** two writers committing the same digest at the same instant
+  both rename, so one file's bytes stay counted. The count can only be too
+  high; a restart recomputes it.
+- **Max blob size** is enforced in `handlers` (`limitBody`): up front from
+  `Content-Length`, then by a reader that fails on the first byte past the
+  limit (offset included for chunked uploads). Mounts copy nothing and are
+  not limited.
+- **On rejection:** 413 `SIZE_INVALID` with `Connection: close` (the access
+  log's response wrapper hides `http.MaxBytesReader`'s own connection-close
+  hook, hence the explicit header). Chunked sessions are discarded: after an
+  aborted write the file's state past the offset is unknown.
+- **Metrics:** `foundry_storage_used_bytes`, `foundry_storage_quota_bytes`.
+
 ---
 
 ## 7. Engineering standards
@@ -362,11 +436,15 @@ everything; `cmd/registry` defaults the flag to true.
 | Storage | `internal/registry/storage/*_test.go` | Atomicity, dedup, digest verification, path safety |
 | Services | `internal/registry/services/*_test.go` | SQL behaviour, manifest parsing, GC (grace, dry-run, DB/disk sync) |
 | DB | `internal/db/db_test.go` | Migration upgrade from previous schema |
-| Handlers | `internal/registry/handlers/*_test.go` | Status codes and headers via `httptest.NewRecorder` |
+| Logging, metrics | `internal/logging`, `internal/metrics` | Request ID attribution, formats/levels; route classification, label bounds, GC decorator |
+| Handlers | `internal/registry/handlers/*_test.go` | Status codes and headers via `httptest.NewRecorder`, against real stores, or against hand-written fakes (`fakes_test.go`) to force backend failures. Log assertions use `captureLogs` (not parallel: it swaps the default logger) |
 | Integration | `tests/integration/*_test.go` | Full server over real HTTP. `regression_test.go` pins every fix from §9 |
+| Conformance | `scripts/conformance.sh`, CI `conformance.yml` | OCI conformance suite v1.1.1 (referrers skipped until R8), `crane` and `docker` round trips, each with auth off and on |
 | Manual | `make test-push` | Real Docker client (see README note on Docker Desktop) |
 
-**Gap:** no automated test drives a real Docker/containerd client. See R7.
+Real clients (`crane`, `docker`) and the OCI conformance suite run in CI
+(R7). Not covered: podman, containerd/nerdctl, Docker's classic image store
+unless the CI runner uses it (the job logs which store it tested).
 
 ---
 
@@ -400,6 +478,7 @@ violation or wrong results; **M** = robustness or maintainability.
 | 21 | M | `regctl`: GC output tied to Go field names, no digest refs, trailing-slash URLs | snake_case JSON, `repo@digest`, `gc -dry-run`, URL normalisation |
 | 22 | M | Runtime DB files committed to git | `data/` ignored and untracked |
 | 23 | M | Dead code (`var _ = hex…`, unused fields), `err ==` comparisons | Removed; `errors.Is` |
+| 24 | H | GET/HEAD/DELETE of a malformed tag (e.g. `.INVALID_MANIFEST_NAME`) returned 400 instead of 404; failed 3 OCI conformance specs (found by R7) | 404 `MANIFEST_UNKNOWN` for reads and deletes; PUT stays 400 |
 
 ---
 
@@ -423,23 +502,28 @@ requests stop DB work and shutdown can drain cleanly. Then re-enable the
 `noctx` linter. *Accept:* `noctx` passes; a cancelled request aborts an
 in-flight GC.
 
-**R3 — Structured logging and observability (medium).** Move to `log/slog`
+**R3 — Structured logging and observability (medium). Done** (November
+2026; see §6.7). Original item: move to `log/slog`
 with request IDs (the `RequestID` middleware is already present); add
 `/healthz` and optional Prometheus metrics (push/pull counts, bytes, GC stats).
 
-**R4 — Vendor htmx (medium).** Embed `htmx.min.js` under `web/static/js/` and
+**R4 — Vendor htmx (medium). Done** (November 2026; see §6.4).
+Original item: embed `htmx.min.js` under `web/static/js/` and
 drop the unpkg dependency, so the UI works offline (matching the
 single-binary goal). *Accept:* the UI works with no network access.
 
-**R5 — Interfaces for stores (medium).** Have handlers and services depend on
+**R5 — Interfaces for stores (medium). Done** (November 2026; see §2).
+Original item: have handlers and services depend on
 `storage.BlobStore` and a metadata interface rather than concrete types, to
 allow fakes in unit tests and alternative backends.
 
-**R6 — Resource limits (medium).** Configurable maximum blob size and total
+**R6 — Resource limits (medium). Done** (November 2026; see §6.8).
+Original item: configurable maximum blob size and total
 `data/` quota; reject with 413 `SIZE_INVALID`. Streaming uploads should abort
 early.
 
-**R7 — Real-client conformance (medium).** CI job that runs the
+**R7 — Real-client conformance (medium). Done** (November 2026; see §8).
+Found and fixed §9 #24. Original item: CI job that runs the
 [OCI distribution conformance suite](https://github.com/opencontainers/distribution-spec/tree/main/conformance)
 and a `crane`/`docker` push-pull round trip against a built binary.
 

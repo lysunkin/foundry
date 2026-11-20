@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"testing"
@@ -243,4 +244,40 @@ func TestRegression_WrongMethodIs405(t *testing.T) {
 	resp := rs.do(t, http.MethodPost, "/v2/x/manifests/latest", nil, nil)
 	mustStatus(t, resp, http.StatusMethodNotAllowed)
 	readBody(t, resp)
+}
+
+// A tag that is not a valid tag can never exist, so reads and deletes of it
+// are 404 MANIFEST_UNKNOWN (OCI conformance: "GET nonexistent manifest should
+// return 404" uses ".INVALID_MANIFEST_NAME"). Pushing to it stays 400, and
+// malformed digests stay 400 DIGEST_INVALID.
+func TestRegression_InvalidTagReadIs404(t *testing.T) {
+	rs := newRegistryServer(t)
+	pushImage(t, rs, nestedRepo, "v1", []byte(`{"f1":1}`))
+	const path = "/v2/" + nestedRepo + "/manifests/"
+
+	for _, tc := range []struct {
+		method, ref string
+		body        []byte
+		want        int
+		code        string
+	}{
+		{http.MethodGet, ".INVALID_MANIFEST_NAME", nil, http.StatusNotFound, "MANIFEST_UNKNOWN"},
+		{http.MethodHead, ".INVALID_MANIFEST_NAME", nil, http.StatusNotFound, ""},
+		{http.MethodDelete, ".INVALID_MANIFEST_NAME", nil, http.StatusNotFound, "MANIFEST_UNKNOWN"},
+		{http.MethodPut, ".INVALID_MANIFEST_NAME", []byte(`{}`), http.StatusBadRequest, "MANIFEST_INVALID"},
+		{http.MethodGet, "sha256:short", nil, http.StatusBadRequest, "DIGEST_INVALID"},
+		{http.MethodDelete, "sha256:short", nil, http.StatusBadRequest, "DIGEST_INVALID"},
+	} {
+		t.Run(tc.method+" "+tc.ref, func(t *testing.T) {
+			var body io.Reader
+			if tc.body != nil {
+				body = bytes.NewReader(tc.body)
+			}
+			resp := rs.do(t, tc.method, path+tc.ref, body, map[string]string{"Content-Type": mediaTypeOCIManifest})
+			mustStatus(t, resp, tc.want)
+			if got := string(readBody(t, resp)); tc.code != "" && !strings.Contains(got, tc.code) {
+				t.Errorf("body = %s, want code %s", got, tc.code)
+			}
+		})
+	}
 }

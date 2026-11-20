@@ -5,7 +5,7 @@ import (
 	"database/sql"
 	"embed"
 	"fmt"
-	"log"
+	"log/slog"
 	"sort"
 	"strings"
 
@@ -91,7 +91,7 @@ func runMigrations(ctx context.Context, db *sql.DB) error {
 		if err := tx.Commit(); err != nil {
 			return err
 		}
-		log.Printf("db: applied migration %s", entry.Name())
+		slog.InfoContext(ctx, "applied migration", "migration", entry.Name())
 	}
 	return nil
 }

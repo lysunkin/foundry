@@ -7,6 +7,32 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Interoperability checks (roadmap R7): `make conformance` runs the OCI
+  distribution-spec conformance suite v1.1.1 against a fresh registry, and
+  `make e2e-clients` runs `crane` and `docker` push/pull round trips (both
+  with `AUTH=1` for authentication). CI runs them on every push and pull
+  request to `main`, and now also runs `make check`.
+
+- Resource limits (roadmap R6), both off by default: `-max-blob-size` /
+  `FOUNDRY_MAX_BLOB_SIZE` and `-storage-quota` / `FOUNDRY_STORAGE_QUOTA`
+  (e.g. `5GiB`, `200GB`). Uploads over a limit get `413 SIZE_INVALID` as soon
+  as the limit is crossed; chunked sessions are discarded. Usage is measured
+  at startup, a warning is logged at 90% of the quota, and
+  `foundry_storage_used_bytes` / `foundry_storage_quota_bytes` are exported
+  with `-metrics`.
+
+- Structured logging with `log/slog` (roadmap R3): `-log-format` /
+  `FOUNDRY_LOG_FORMAT` (`text` default, or `json`) and `-log-level` /
+  `FOUNDRY_LOG_LEVEL` (`debug`, `info` default, `warn`, `error`).
+- `X-Request-Id` on every response; a well-formed client value is kept,
+  otherwise a UUID is generated. Log records of a request carry its
+  `request_id`.
+- `GET /healthz` (liveness) and `GET /readyz` (database readiness, 503 when
+  not ready). Neither requires authentication.
+- Optional Prometheus metrics at `GET /metrics` (`-metrics` /
+  `FOUNDRY_METRICS`, default off): HTTP requests, latency, blob bytes, GC
+  runs. Adds the `github.com/prometheus/client_golang` dependency.
+
 - Optional HTTP Basic authentication (roadmap R1). Enable it with
   `-auth-htpasswd` / `FOUNDRY_AUTH_HTPASSWD` pointing at a bcrypt htpasswd
   file (`htpasswd -B`). `docker login` works; unauthenticated pushes, deletes
@@ -23,6 +49,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- Log output format changed: one structured `request` record per request
+  replaces chi's access log line, and all server messages are structured
+  (text by default). Update any log parsing accordingly.
+- The web UI no longer loads htmx from unpkg: htmx 1.9.12 is embedded in the
+  binary and served from `/static/js/htmx.min.js`, so the UI works without
+  network access (roadmap R4).
 - CSRF protection is always on: state-changing requests from another site
   (detected via `Sec-Fetch-Site`/`Origin`) are rejected with 403, and
   `POST /ui/gc` requires the `HX-Request: true` header that htmx sends.
@@ -36,3 +68,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Graceful shutdown now cancels requests still running after the 30s drain
   period and waits up to 5s for them to finish, instead of exiting with them
   still running. A second SIGINT/SIGTERM exits immediately.
+
+### Fixed
+
+- `GET`, `HEAD` and `DELETE` of a manifest by a malformed tag (for example
+  `.INVALID_MANIFEST_NAME`) return 404 `MANIFEST_UNKNOWN` instead of 400, as
+  the OCI conformance suite requires. Pushing to a malformed tag is still 400.

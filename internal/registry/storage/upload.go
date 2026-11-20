@@ -22,15 +22,17 @@ var uploadIDRe = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
 // UploadStore manages temporary files for chunked blob uploads.
 type UploadStore struct {
 	dir   string
+	usage *Usage   // nil: no accounting
 	locks sync.Map // upload id -> *sync.Mutex
 }
 
-func NewUploadStore(dir string) (*UploadStore, error) {
+// NewUploadStore creates a store for upload sessions in dir/uploads.
+func NewUploadStore(dir string, opts ...Option) (*UploadStore, error) {
 	p := filepath.Join(dir, "uploads")
 	if err := os.MkdirAll(p, 0o755); err != nil {
 		return nil, fmt.Errorf("upload store init: %w", err)
 	}
-	return &UploadStore{dir: p}, nil
+	return &UploadStore{dir: p, usage: applyOptions(opts).usage}, nil
 }
 
 // Lock serialises operations on a single upload session (e.g. two concurrent
@@ -72,10 +74,16 @@ func (s *UploadStore) Append(ctx context.Context, id string, offset int64, r io.
 	}
 	defer f.Close()
 
+	info, err := f.Stat()
+	if err != nil {
+		return 0, fmt.Errorf("upload stat: %w", err)
+	}
 	if _, err := f.Seek(offset, io.SeekStart); err != nil {
 		return 0, fmt.Errorf("upload seek: %w", err)
 	}
-	n, err := copyContext(ctx, f, r)
+	// Bytes below the current file size overwrite counted data.
+	qw := &quotaWriter{w: f, u: s.usage, free: max(info.Size()-offset, 0)}
+	n, err := copyContext(ctx, qw, r)
 	if err != nil {
 		return 0, fmt.Errorf("upload write: %w", err)
 	}
@@ -99,7 +107,14 @@ func (s *UploadStore) Delete(id string) error {
 		return err
 	}
 	s.locks.Delete(id)
-	if err := os.Remove(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
+	info, err := os.Stat(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if err := s.usage.removeFile(path, info.Size()); err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return err
 	}
 	return nil

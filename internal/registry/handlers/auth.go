@@ -1,7 +1,7 @@
 package handlers
 
 import (
-	"log"
+	"log/slog"
 	"net/http"
 	"strings"
 
@@ -25,7 +25,7 @@ type AuthConfig struct {
 
 // RequireAuth returns middleware enforcing HTTP Basic authentication:
 //
-//   - /static/ is always public.
+//   - /static/, /healthz and /readyz are always public.
 //   - Invalid credentials are rejected, even on requests that would be
 //     allowed anonymously, so that `docker login` fails on a bad password.
 //   - Valid credentials grant full access (there is a single role).
@@ -40,18 +40,19 @@ func RequireAuth(cfg AuthConfig) func(http.Handler) http.Handler {
 			return next
 		}
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if strings.HasPrefix(r.URL.Path, "/static/") {
+			if strings.HasPrefix(r.URL.Path, "/static/") || healthPaths[r.URL.Path] {
 				next.ServeHTTP(w, r)
 				return
 			}
 			if _, hasAuth := r.Header["Authorization"]; hasAuth {
 				user, pass, ok := r.BasicAuth()
 				if ok && cfg.Users.Verify(user, pass) {
+					setRequestUser(r.Context(), user)
 					next.ServeHTTP(w, r)
 					return
 				}
-				log.Printf("auth: rejected credentials for user %q from %s: %s %q", //nolint:gosec // G706: %q escapes control chars
-					user, r.RemoteAddr, r.Method, r.URL.Path)
+				slog.WarnContext(r.Context(), "auth: rejected credentials",
+					"user", user, "remote_addr", r.RemoteAddr, "method", r.Method, "path", r.URL.Path)
 				unauthorized(w, r)
 				return
 			}
@@ -63,6 +64,9 @@ func RequireAuth(cfg AuthConfig) func(http.Handler) http.Handler {
 		})
 	}
 }
+
+// healthPaths are probed by orchestrators, which carry no credentials.
+var healthPaths = map[string]bool{"/healthz": true, "/readyz": true}
 
 // RequireHTMX rejects requests that lack the HX-Request header htmx sends.
 // Browsers cannot attach custom headers to cross-site "simple" requests

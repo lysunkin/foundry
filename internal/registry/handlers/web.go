@@ -3,34 +3,28 @@ package handlers
 import (
 	"context"
 	"errors"
-	"log"
+	"log/slog"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
 
 	"github.com/foundry/registry/internal/oci"
 	"github.com/foundry/registry/internal/registry/services"
-	"github.com/foundry/registry/internal/registry/storage"
 	"github.com/foundry/registry/internal/ui"
 )
 
 // WebHandler renders the HTML UI.
 type WebHandler struct {
-	repo      *services.RepositoryService
-	blobs     *storage.FilesystemBlobStore
-	uploads   *storage.UploadStore
+	repo      WebMetadata
+	gc        Collector
 	gcOpts    services.GCOptions
 	templates *ui.Templates
 }
 
-func NewWebHandler(
-	repo *services.RepositoryService,
-	blobs *storage.FilesystemBlobStore,
-	uploads *storage.UploadStore,
-	gcOpts services.GCOptions,
-	tmpls *ui.Templates,
-) *WebHandler {
-	return &WebHandler{repo: repo, blobs: blobs, uploads: uploads, gcOpts: gcOpts, templates: tmpls}
+// NewWebHandler returns a handler for the web UI. gcOpts are the options for
+// the GC button.
+func NewWebHandler(repo WebMetadata, gc Collector, gcOpts services.GCOptions, tmpls *ui.Templates) *WebHandler {
+	return &WebHandler{repo: repo, gc: gc, gcOpts: gcOpts, templates: tmpls}
 }
 
 func (h *WebHandler) Mount(r chi.Router) {
@@ -94,7 +88,7 @@ func (h *WebHandler) tagPage(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *WebHandler) runGC(w http.ResponseWriter, r *http.Request) {
-	result, err := services.GarbageCollect(r.Context(), h.repo, h.blobs, h.uploads, h.gcOpts)
+	result, err := h.gc.Collect(r.Context(), h.gcOpts)
 	if err != nil {
 		h.fail(w, r, err)
 		return
@@ -118,7 +112,7 @@ func (h *WebHandler) fail(w http.ResponseWriter, r *http.Request, err error) {
 		http.Error(w, "request cancelled", http.StatusServiceUnavailable)
 		return
 	}
-	log.Printf("web error: %s %q: %v", r.Method, r.URL.Path, err) //nolint:gosec // G706: %q escapes control chars
+	slog.ErrorContext(r.Context(), "server error", "method", r.Method, "path", r.URL.Path, "err", err)
 	http.Error(w, "internal server error", http.StatusInternalServerError)
 }
 
@@ -128,7 +122,7 @@ func (h *WebHandler) render(w http.ResponseWriter, r *http.Request, name string,
 		return
 	}
 	if err := h.templates.Render(w, name, data); err != nil {
-		log.Printf("template %s error: %v", name, err)
+		slog.ErrorContext(r.Context(), "render template", "template", name, "err", err)
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 	}
 }

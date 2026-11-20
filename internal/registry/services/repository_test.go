@@ -538,3 +538,18 @@ func TestReferencedBlobDigests(t *testing.T) {
 		}
 	}
 }
+
+func TestPing(t *testing.T) {
+	database, err := db.Open(t.Context(), filepath.Join(t.TempDir(), "ping.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc := services.NewRepositoryService(database)
+	if err := svc.Ping(t.Context()); err != nil {
+		t.Fatalf("Ping on open DB: %v", err)
+	}
+	database.Close()
+	if err := svc.Ping(t.Context()); err == nil {
+		t.Error("Ping on closed DB succeeded")
+	}
+}

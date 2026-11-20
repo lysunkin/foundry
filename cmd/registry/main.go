@@ -6,18 +6,22 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"log"
+	"io"
+	"log/slog"
+	"math"
 	"net"
 	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
 	"github.com/foundry/registry/internal/auth"
 	"github.com/foundry/registry/internal/db"
+	"github.com/foundry/registry/internal/logging"
 	"github.com/foundry/registry/internal/registry"
 	"github.com/foundry/registry/internal/registry/services"
 	"github.com/foundry/registry/internal/registry/storage"
@@ -27,7 +31,8 @@ import (
 
 func main() {
 	if err := run(); err != nil {
-		log.Fatal(err)
+		slog.Error("fatal", "err", err)
+		os.Exit(1)
 	}
 }
 
@@ -47,16 +52,42 @@ func run() error {
 		return err
 	}
 	anonPull := flag.Bool("auth-anonymous-pull", anonPullDefault, "with authentication enabled, allow unauthenticated pulls and browsing")
+	metricsDefault, err := envBool("FOUNDRY_METRICS", false)
+	if err != nil {
+		return err
+	}
+	enableMetrics := flag.Bool("metrics", metricsDefault, "serve Prometheus metrics at /metrics")
+	maxBlobSizeFlag := flag.String("max-blob-size", envOr("FOUNDRY_MAX_BLOB_SIZE", "0"), "reject blobs larger than this (e.g. 5GiB); 0 means no limit")
+	quotaFlag := flag.String("storage-quota", envOr("FOUNDRY_STORAGE_QUOTA", "0"), "maximum bytes of blobs and in-flight uploads (e.g. 100GB); 0 means no limit")
+	logFormat := flag.String("log-format", envOr("FOUNDRY_LOG_FORMAT", logging.FormatText), "log format: text or json")
+	logLevel := flag.String("log-level", envOr("FOUNDRY_LOG_LEVEL", "info"), "minimum log level: debug, info, warn or error")
 	flag.Parse()
+
+	logger, err := newLogger(os.Stderr, *logFormat, *logLevel)
+	if err != nil {
+		return err
+	}
+	// Packages log through slog's default logger with the request context;
+	// the handler adds the request ID.
+	slog.SetDefault(logger)
+
+	maxBlobSize, err := parseSize(*maxBlobSizeFlag)
+	if err != nil {
+		return fmt.Errorf("-max-blob-size: %w", err)
+	}
+	quota, err := parseSize(*quotaFlag)
+	if err != nil {
+		return fmt.Errorf("-storage-quota: %w", err)
+	}
 
 	var users *auth.Htpasswd
 	if *htpasswdPath != "" {
 		if users, err = auth.LoadHtpasswd(*htpasswdPath); err != nil {
 			return err
 		}
-		log.Printf("authentication enabled (anonymous pull: %t)", *anonPull)
+		slog.Info("authentication enabled", "anonymous_pull", *anonPull)
 		if !isLoopback(*addr) {
-			log.Printf("WARNING: authentication is enabled on non-loopback address %s; credentials are sent in cleartext unless TLS is terminated in front of the registry", *addr)
+			slog.Warn("authentication is enabled on a non-loopback address; credentials are sent in cleartext unless TLS is terminated in front of the registry", "addr", *addr)
 		}
 	}
 
@@ -71,12 +102,16 @@ func run() error {
 	}
 	defer database.Close()
 
-	blobStore, err := storage.NewFilesystemBlobStore(*dataDir)
+	usage := storage.NewUsage(quota)
+	blobStore, err := storage.NewFilesystemBlobStore(*dataDir, storage.WithUsage(usage))
 	if err != nil {
 		return err
 	}
-	uploadStore, err := storage.NewUploadStore(*dataDir)
+	uploadStore, err := storage.NewUploadStore(*dataDir, storage.WithUsage(usage))
 	if err != nil {
+		return err
+	}
+	if err := usage.Init(ctx, *dataDir); err != nil {
 		return err
 	}
 	tmpls, err := ui.Load()
@@ -92,6 +127,9 @@ func run() error {
 		UploadTTL:     *uploadTTL,
 		Users:         users,
 		AnonymousPull: *anonPull,
+		Metrics:       *enableMetrics,
+		MaxBlobSize:   maxBlobSize,
+		Usage:         usage,
 	}
 	srv, err := registry.New(cfg, services.NewRepositoryService(database), blobStore, uploadStore, tmpls, web.StaticFS)
 	if err != nil {
@@ -106,7 +144,7 @@ func run() error {
 
 	errCh := make(chan error, 1)
 	go func() {
-		log.Printf("Foundry Registry listening on %s  (data: %s)", *addr, *dataDir)
+		slog.Info("Foundry Registry listening", "addr", *addr, "data", *dataDir)
 		errCh <- httpSrv.ListenAndServe()
 	}()
 
@@ -117,7 +155,7 @@ func run() error {
 		}
 	case <-ctx.Done():
 		stop() // a second SIGINT/SIGTERM now terminates immediately
-		log.Printf("shutting down…")
+		slog.Info("shutting down")
 		return shutdown(context.WithoutCancel(ctx), httpSrv, cancelRequests, drainTimeout, abortTimeout)
 	}
 	return nil
@@ -146,7 +184,7 @@ func shutdown(ctx context.Context, srv *http.Server, cancelRequests context.Canc
 		return err
 	}
 
-	log.Printf("shutdown: requests still running after %s; cancelling them", drain)
+	slog.Warn("shutdown: requests still running; cancelling them", "after", drain)
 	cancelRequests()
 	abortCtx, cancelAbort := context.WithTimeout(ctx, abort)
 	defer cancelAbort()
@@ -154,6 +192,44 @@ func shutdown(ctx context.Context, srv *http.Server, cancelRequests context.Canc
 		return fmt.Errorf("shutdown: requests still running %s after cancellation: %w", abort, err)
 	}
 	return nil
+}
+
+// newLogger builds the server logger from the -log-format and -log-level
+// values.
+func newLogger(w io.Writer, format, level string) (*slog.Logger, error) {
+	lvl, err := logging.ParseLevel(level)
+	if err != nil {
+		return nil, err
+	}
+	return logging.New(w, format, lvl)
+}
+
+// sizeUnits maps size suffixes (lower case) to their multipliers.
+var sizeUnits = map[string]int64{
+	"": 1, "b": 1,
+	"kb": 1e3, "mb": 1e6, "gb": 1e9, "tb": 1e12,
+	"kib": 1 << 10, "mib": 1 << 20, "gib": 1 << 30, "tib": 1 << 40,
+}
+
+// parseSize parses a non-negative whole number of bytes with an optional
+// unit suffix: B, KB/MB/GB/TB (powers of 1000) or KiB/MiB/GiB/TiB (powers of
+// 1024), case-insensitive, e.g. "512MiB" or "10GB".
+func parseSize(s string) (int64, error) {
+	t := strings.TrimSpace(s)
+	i := strings.IndexFunc(t, func(r rune) bool { return r < '0' || r > '9' })
+	if i < 0 {
+		i = len(t)
+	}
+	num, unit := t[:i], strings.ToLower(strings.TrimSpace(t[i:]))
+	mult, ok := sizeUnits[unit]
+	if num == "" || !ok {
+		return 0, fmt.Errorf("invalid size %q (want e.g. 0, 1048576, 512MiB or 10GB)", s)
+	}
+	n, err := strconv.ParseInt(num, 10, 64)
+	if err != nil || n > math.MaxInt64/mult {
+		return 0, fmt.Errorf("invalid size %q: out of range", s)
+	}
+	return n * mult, nil
 }
 
 // envBool parses a boolean environment variable, failing on invalid values.

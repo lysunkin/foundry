@@ -48,8 +48,8 @@ func newTestServer(t *testing.T) *testServer {
 	svc := services.NewRepositoryService(database)
 	r := chi.NewRouter()
 
-	handlers.NewRegistryHandler(svc, blobs, ups).Mount(r)
-	handlers.NewAPIHandler(svc, blobs, ups, services.GCOptions{}).Mount(r)
+	handlers.NewRegistryHandler(svc, blobs, ups, 0).Mount(r)
+	handlers.NewAPIHandler(svc, services.NewCollector(svc, blobs, ups), services.GCOptions{}).Mount(r)
 
 	return &testServer{router: r, svc: svc, blobs: blobs, ups: ups}
 }

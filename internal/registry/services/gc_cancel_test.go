@@ -63,7 +63,7 @@ func TestGC_CancelledBeforeStartDeletesNothing(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 
-	result, err := services.GarbageCollect(ctx, svc, blobs, nil, services.GCOptions{})
+	result, err := services.NewCollector(svc, blobs, nil).Collect(ctx, services.GCOptions{})
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("err = %v, want context.Canceled", err)
 	}
@@ -88,7 +88,7 @@ func TestGC_CancelledMidSweepStopsAndStaysConsistent(t *testing.T) {
 	// Count context checks in a complete run over an identical fixture.
 	svc, blobs, _ := gcFixture(t, n)
 	full := newCountingContext(t, -1)
-	if _, err := services.GarbageCollect(full, svc, blobs, nil, services.GCOptions{}); err != nil {
+	if _, err := services.NewCollector(svc, blobs, nil).Collect(full, services.GCOptions{}); err != nil {
 		t.Fatalf("uncancelled GC: %v", err)
 	}
 
@@ -98,7 +98,7 @@ func TestGC_CancelledMidSweepStopsAndStaysConsistent(t *testing.T) {
 	// before the end lands inside the sweep. Earlier checks (mark phase,
 	// directory walk) depend on implementation details and are not assumed.
 	ctx := newCountingContext(t, full.calls-n/2)
-	_, err := services.GarbageCollect(ctx, svc, blobs, nil, services.GCOptions{})
+	_, err := services.NewCollector(svc, blobs, nil).Collect(ctx, services.GCOptions{})
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("err = %v, want context.Canceled", err)
 	}
@@ -122,7 +122,7 @@ func TestGC_CancelledMidSweepStopsAndStaysConsistent(t *testing.T) {
 	}
 
 	// The next GC finishes the job.
-	if _, err := services.GarbageCollect(t.Context(), svc, blobs, nil, services.GCOptions{}); err != nil {
+	if _, err := services.NewCollector(svc, blobs, nil).Collect(t.Context(), services.GCOptions{}); err != nil {
 		t.Fatalf("follow-up GC: %v", err)
 	}
 	for _, d := range digests {
